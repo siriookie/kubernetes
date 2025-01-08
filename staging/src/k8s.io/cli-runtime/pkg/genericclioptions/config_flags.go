@@ -79,54 +79,54 @@ var _ RESTClientGetter = &ConfigFlags{}
 // ConfigFlags composes the set of values necessary
 // for obtaining a REST client config
 type ConfigFlags struct {
-	CacheDir   *string
-	KubeConfig *string
+	CacheDir   *string //默认缓存目录。通常用于存储本地缓存的 Kubernetes 配置或状态数据
+	KubeConfig *string // 指定一个 kubeconfig 文件的路径，kubeconfig 文件中存储了访问 Kubernetes 集群的配置信息，包括集群、用户认证、上下文等信息。该字段的值通常是指向 ~/.kube/config 的路径。
 
 	// config flags
-	ClusterName        *string
-	AuthInfoName       *string
-	Context            *string
-	Namespace          *string
-	APIServer          *string
-	TLSServerName      *string
-	Insecure           *bool
-	CertFile           *string
-	KeyFile            *string
-	CAFile             *string
-	BearerToken        *string
-	Impersonate        *string
-	ImpersonateUID     *string
-	ImpersonateGroup   *[]string
-	Username           *string
-	Password           *string
-	Timeout            *string
-	DisableCompression *bool
+	ClusterName        *string   //要使用的 kubeconfig 集群的名称。用于选择 kubeconfig 文件中对应的集群配置。
+	AuthInfoName       *string   //指定认证信息的名称，用于从 kubeconfig 中选择适当的认证方式（例如，用户名、密码、令牌等）
+	Context            *string   //指定上下文（context）的名称。上下文通常包含集群、用户认证信息和命名空间，它定义了 kubectl 与 Kubernetes 集群交互时的环境。
+	Namespace          *string   //如果存在，则此 CLI 请求的命名空间范围
+	APIServer          *string   //Kubernetes API 服务器的地址和端口。如果在 kubeconfig 中没有指定，通常可以通过此字段来设置。
+	TLSServerName      *string   //用于服务器证书验证的服务器名称。如果未提供，则使用用于联系服务器的主机名
+	Insecure           *bool     //一个布尔值，表示是否忽略 SSL/TLS 证书验证。当设置为 true 时，不会对 API 服务器的 SSL/TLS 证书进行验证，这通常用于测试环境中
+	CertFile           *string   //指定用于客户端认证的证书文件路径。
+	KeyFile            *string   // 指定用于客户端认证的私钥文件路径。
+	CAFile             *string   //指定用于验证 API 服务器证书的根证书文件路径。通常用于确保客户端与 API 服务器通信时的安全性。
+	BearerToken        *string   //用于向 API Server进行身份验证的承载令牌
+	Impersonate        *string   // 用于模拟操作的用户名。用户可以是命名空间中的普通用户或服务帐户
+	ImpersonateUID     *string   //模拟操作的 UID
+	ImpersonateGroup   *[]string //模拟组进行操作，可以重复该标志来指定多个组
+	Username           *string   // API Server基本身份验证的用户名
+	Password           *string   //API Server基本身份验证的密码
+	Timeout            *string   //放弃单个服务器请求之前等待的时间长度。非零值应包含相应的时间单位（例如1s、2m、3h）。值为零意味着请求不会超时
+	DisableCompression *bool     //一个布尔值，指定是否禁用 HTTP 响应压缩。禁用压缩可能会影响性能，但有时出于某些需求需要禁用压缩。
 	// If non-nil, wrap config function can transform the Config
 	// before it is returned in ToRESTConfig function.
-	WrapConfigFn func(*rest.Config) *rest.Config
+	WrapConfigFn func(*rest.Config) *rest.Config //一个函数，接受一个 *rest.Config 对象并返回一个修改后的 *rest.Config。可以用来在生成 REST 配置时进行自定义处理，例如添加额外的认证信息或修改配置。
 
-	clientConfig     clientcmd.ClientConfig
-	clientConfigLock sync.Mutex
+	clientConfig     clientcmd.ClientConfig //保存客户端配置的具体实现。通常用于加载和解析 kubeconfig 文件中的配置信息。
+	clientConfigLock sync.Mutex             //一个互斥锁，用于保护 clientConfig 的并发访问，确保线程安全。
 
-	restMapper     meta.RESTMapper
+	restMapper     meta.RESTMapper //用于映射资源的名称（如 Pod、Service）到对应的 REST 资源和 API 路径。
 	restMapperLock sync.Mutex
 
-	discoveryClient     discovery.CachedDiscoveryInterface
-	discoveryClientLock sync.Mutex
+	discoveryClient     discovery.CachedDiscoveryInterface //用于访问 Kubernetes API 服务器并获取集群的资源信息。
+	discoveryClientLock sync.Mutex                         //一个互斥锁，用于保护 discoveryClient 的并发访问。
 
 	// If set to true, will use persistent client config, rest mapper, discovery client, and
 	// propagate them to the places that need them, rather than
 	// instantiating them multiple times.
-	usePersistentConfig bool
+	usePersistentConfig bool //如果设置为 true，则使用持久化的客户端配置、REST 映射器和发现客户端，而不是每次都重新创建它们。
 	// Allows increasing burst used for discovery, this is useful
 	// in clusters with many registered resources
-	discoveryBurst int
+	discoveryBurst int //设置发现请求的最大突发速率，适用于集群中资源非常多的情况，调整此值可以优化性能。
 	// Allows increasing qps used for discovery, this is useful
 	// in clusters with many registered resources
-	discoveryQPS float32
+	discoveryQPS float32 // 设置每秒请求次数（QPS）限制，适用于大量资源注册的 Kubernetes 集群
 	// Allows all possible warnings are printed in a standardized
 	// format.
-	warningPrinter *printers.WarningPrinter
+	warningPrinter *printers.WarningPrinter //用于打印警告信息，通常是关于配置的警告或操作中的警告。
 }
 
 // ToRESTConfig implements RESTClientGetter.
@@ -446,8 +446,8 @@ func (f *ConfigFlags) WithWarningPrinter(ioStreams genericiooptions.IOStreams) *
 // NewConfigFlags returns ConfigFlags with default values set
 func NewConfigFlags(usePersistentConfig bool) *ConfigFlags {
 	impersonateGroup := []string{}
-	insecure := false
-	disableCompression := false
+	insecure := false           // 和api server 开启tls
+	disableCompression := false // 不禁用 HTTP 响应压缩
 
 	return &ConfigFlags{
 		Insecure:   &insecure,
@@ -474,6 +474,8 @@ func NewConfigFlags(usePersistentConfig bool) *ConfigFlags {
 		// The more groups you have, the more discovery requests you need to make.
 		// with a burst of 300, we will not be rate-limiting for most clusters but
 		// the safeguard will still be here. This config is only used for discovery.
+		//为了避免过多请求对集群造成负载，设置了一个最大允许的并发请求数（300）。大多数集群都可以在这个限制下正常工作，同时仍保留一些安全保障，
+		//防止请求过于频繁导致集群的性能问题。这个配置项只会影响资源发现的操作，不会影响其他 Kubernetes 操作。
 		discoveryBurst: 300,
 	}
 }

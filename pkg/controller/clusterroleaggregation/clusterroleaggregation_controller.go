@@ -96,7 +96,7 @@ func (c *ClusterRoleAggregationController) syncClusterRole(ctx context.Context, 
 	if sharedClusterRole.AggregationRule == nil {
 		return nil
 	}
-
+	// 把查出来的集群角色的rules应用到传进来的集群角色上
 	newPolicyRules := []rbacv1.PolicyRule{}
 	for i := range sharedClusterRole.AggregationRule.ClusterRoleSelectors {
 		selector := sharedClusterRole.AggregationRule.ClusterRoleSelectors[i]
@@ -123,11 +123,11 @@ func (c *ClusterRoleAggregationController) syncClusterRole(ctx context.Context, 
 			}
 		}
 	}
-
+	//如果角色和传进来的cluster role 的rules一样，则不更新
 	if equality.Semantic.DeepEqual(newPolicyRules, sharedClusterRole.Rules) {
 		return nil
 	}
-
+	// 调接口去更新传进来的cluster role的rules
 	err = c.applyClusterRoles(ctx, sharedClusterRole.Name, newPolicyRules)
 	if errors.IsUnsupportedMediaType(err) { // TODO: Remove this fallback at least one release after ServerSideApply GA
 		// When Server Side Apply is not enabled, fallback to Update. This is required when running
@@ -142,7 +142,7 @@ func (c *ClusterRoleAggregationController) syncClusterRole(ctx context.Context, 
 func (c *ClusterRoleAggregationController) applyClusterRoles(ctx context.Context, name string, newPolicyRules []rbacv1.PolicyRule) error {
 	clusterRoleApply := rbacv1ac.ClusterRole(name).
 		WithRules(toApplyPolicyRules(newPolicyRules)...)
-
+	// apply 是增量更新的，它不是将整个资源完全覆盖掉，而是 只会变更资源的不同部分
 	opts := metav1.ApplyOptions{FieldManager: "clusterrole-aggregation-controller", Force: true}
 	_, err := c.clusterRoleClient.ClusterRoles().Apply(ctx, clusterRoleApply, opts)
 	return err

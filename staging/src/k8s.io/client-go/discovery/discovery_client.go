@@ -142,6 +142,15 @@ type ServerResourcesInterface interface {
 	//
 	// The returned resource list might be non-nil with partial results even in the case of
 	// non-nil error.
+	// 这个函数的作用是：
+	//从 API Server 获取所有命名空间作用域的资源列表。
+	//按照 API Server 首选的 API 组版本返回资源。
+	//返回值是 []*metav1.APIResourceList，每个 APIResourceList 包含以下内容：
+	//GroupVersion：对应的 API 组和版本。
+	//APIResources：资源列表，其中每个 APIResource 描述一个具体资源（如 pods、services 等）。
+	//注意点：
+	//仅包含“受 Namespace 限制的资源”（即 Namespaced=true 的资源），像 Node 这种全局资源不会包含在结果中。
+	//如果某些 API 组无法发现资源（例如由于权限或 API Server 的配置问题），可能会触发错误。
 	ServerPreferredNamespacedResources() ([]*metav1.APIResourceList, error)
 }
 

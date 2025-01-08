@@ -37,6 +37,10 @@ type AvailableAPIsGetter interface {
 
 // PeriodicallyInvalidate periodically invalidates the preferred version cache until
 // told to stop.
+// 每隔 HorizontalPodAutoscalerSyncPeriod.Duration 时间：
+// 调用 PeriodicallyInvalidate 内部逻辑将缓存的 API 信息（通常是支持的自定义度量 API 的版本）设为无效（一般为 nil 或清空存储的内容）。
+// 失效后，当有新的请求时：
+// 如果缓存失效，控制器会重新触发从 API 服务器获取最新的 Custom Metrics API 信息。
 func PeriodicallyInvalidate(cache AvailableAPIsGetter, interval time.Duration, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

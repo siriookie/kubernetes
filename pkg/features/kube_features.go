@@ -222,6 +222,13 @@ const (
 	// Enables support for resources with custom parameters and a lifecycle
 	// that is independent of a Pod. Resource allocation is done by the scheduler
 	// based on "structured parameters".
+	// DynamicResourceAllocation 是一个 Kubernetes 的特性开关（Feature Gate），它用于启用支持“动态资源分配”的功能。
+	//动态资源分配是一个用于在 Pod 和 Pod 内的容器之间请求和共享资源的 API。它是通用资源持久卷 API 的泛化。通常，这些资源是 GPU 等设备。
+	//
+	//功能说明：
+	//
+	//该功能支持具有自定义参数的资源分配。资源的分配不再仅仅依赖于 Pod 的资源请求和限制，而是可以基于更为“结构化”的参数进行分配。
+	//更具体地说，资源的生命周期与 Pod 独立，意味着即使 Pod 已经终止或删除，分配给 Pod 的资源可能会继续存在，直到资源本身完成生命周期管理。
 	DynamicResourceAllocation featuregate.Feature = "DynamicResourceAllocation"
 
 	// owner: @LionelJouin

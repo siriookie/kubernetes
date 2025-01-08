@@ -24,6 +24,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/clusterroleaggregation"
 )
 
+// 监听cluster role，将多个可以聚合权限的cluster role聚合成一个
 func newClusterRoleAggregrationControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.ClusterRoleAggregationController,

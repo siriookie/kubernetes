@@ -93,10 +93,29 @@ type namespacedResourcesDeleter struct {
 // Returns ResourcesRemainingError if it deleted some resources but needs
 // to wait for them to go away.
 // Caller is expected to keep calling this until it succeeds.
+// 检查是否设置了删除时间戳 (Deletion Timestamp):
+//
+// 如果命名空间没有设置 deletionTimestamp，删除操作不会继续。
+// 需要先确保命名空间的 deletionTimestamp 已经设置（表明删除流程已经开始）。
+// 验证命名空间是否处于 "Terminating" 阶段:
+//
+// 删除命名空间的资源之前，需要确保命名空间的状态是 "Terminating"。
+// 如果不是，则会将命名空间的状态更新为 "Terminating"。
+// 删除命名空间中的所有资源:
+//
+// 在命名空间标记为 "Terminating" 后，控制器会依次清理命名空间中的所有资源（例如 Pods、Services 等）。
+// 此时，控制器会通过 Finalizer 阻止命名空间在资源清理完成之前被删除。
+// 清除 Finalizer 并删除命名空间:
+//
+// 在命名空间中所有资源都被成功删除后，控制器会移除命名空间对象上的 Finalizer。
+// 一旦 Finalizer 被移除，Kubernetes 就会从集群中完全删除这个命名空间。
 func (d *namespacedResourcesDeleter) Delete(ctx context.Context, nsName string) error {
 	// Multiple controllers may edit a namespace during termination
 	// first get the latest state of the namespace before proceeding
 	// if the namespace was deleted already, don't do anything
+	// 在终止过程中可能有多个控制器会编辑同一个命名空间。
+	// 首先获取该命名空间的最新状态，然后再继续后续操作。
+	// 如果该命名空间已经被删除，则什么都不做。
 	namespace, err := d.nsClient.Get(ctx, nsName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -104,6 +123,7 @@ func (d *namespacedResourcesDeleter) Delete(ctx context.Context, nsName string) 
 		}
 		return err
 	}
+	//没设时间戳 不需要删除
 	if namespace.DeletionTimestamp == nil {
 		return nil
 	}
@@ -114,18 +134,21 @@ func (d *namespacedResourcesDeleter) Delete(ctx context.Context, nsName string) 
 	// if we get a not found error, we assume the namespace is truly gone
 	namespace, err = d.retryOnConflictError(ctx, namespace, d.updateNamespaceStatusFunc)
 	if err != nil {
+		// 可能是非冲突的 err
+		// 还可能是该 namespace 已经被别的用户或程序变更成功
 		if errors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
-
+	// namespace 的状态已经变更成功并且是 Terminating
 	// the latest view of the namespace asserts that namespace is no longer deleting..
 	if namespace.DeletionTimestamp.IsZero() {
 		return nil
 	}
 
 	// return if it is already finalized.
+	// 检查 namespace 有没有 finalized，如果没有，直接返回
 	if finalized(namespace) {
 		return nil
 	}
@@ -257,6 +280,7 @@ func (d *namespacedResourcesDeleter) retryOnConflictError(ctx context.Context, n
 		if err != nil {
 			return nil, err
 		}
+		//目标 namespace 被其他操作改变，这时不能继续对该对象进行操作了，通常意味着需要放弃当前的更新，并做出适当的应对措施
 		if prevNamespace.UID != latestNamespace.UID {
 			return nil, fmt.Errorf("namespace uid has changed across retries")
 		}
@@ -268,6 +292,7 @@ func (d *namespacedResourcesDeleter) updateNamespaceStatusFunc(ctx context.Conte
 	if namespace.DeletionTimestamp.IsZero() || namespace.Status.Phase == v1.NamespaceTerminating {
 		return namespace, nil
 	}
+	// 把阶段设置成 Terminating
 	newNamespace := namespace.DeepCopy()
 	newNamespace.Status.Phase = v1.NamespaceTerminating
 	return d.nsClient.UpdateStatus(ctx, newNamespace, metav1.UpdateOptions{})
@@ -279,6 +304,10 @@ func finalized(namespace *v1.Namespace) bool {
 }
 
 // finalizeNamespace removes the specified finalizerToken and finalizes the namespace
+// 确保命名空间内容已清理完毕
+// 安全地移除 finalizer
+// 处理并发删除场景
+// 避免因命名空间已被删除而报错
 func (d *namespacedResourcesDeleter) finalizeNamespace(ctx context.Context, namespace *v1.Namespace) (*v1.Namespace, error) {
 	namespaceFinalize := v1.Namespace{}
 	namespaceFinalize.ObjectMeta = namespace.ObjectMeta
@@ -306,11 +335,16 @@ func (d *namespacedResourcesDeleter) finalizeNamespace(ctx context.Context, name
 // deleteCollection is a helper function that will delete the collection of resources
 // it returns true if the operation was supported on the server.
 // it returns an error if the operation was supported on the server but was unable to complete.
+// deleteCollection 函数是一个帮助函数，目的是删除一组资源（资源集合）。它会在执行删除操作时返回两个信息：
+//
+// true：表示删除操作在服务器端是支持的。
+// 错误信息（error）：表示删除操作在服务器端支持，但操作未能成功完成。
 func (d *namespacedResourcesDeleter) deleteCollection(ctx context.Context, gvr schema.GroupVersionResource, namespace string) (bool, error) {
 	logger := klog.FromContext(ctx)
 	logger.V(5).Info("Namespace controller - deleteCollection", "namespace", namespace, "resource", gvr)
 
 	key := operationKey{operation: operationDeleteCollection, gvr: gvr}
+	// 不支持 delete 操作 就返回 false
 	if !d.opCache.isSupported(key) {
 		logger.V(5).Info("Namespace controller - deleteCollection ignored since not supported", "namespace", namespace, "resource", gvr)
 		return false, nil
@@ -319,18 +353,27 @@ func (d *namespacedResourcesDeleter) deleteCollection(ctx context.Context, gvr s
 	// namespace controller does not want the garbage collector to insert the orphan finalizer since it calls
 	// resource deletions generically.  it will ensure all resources in the namespace are purged prior to releasing
 	// namespace itself.
+	// 命名空间控制器通过自主管理资源删除，避免垃圾回收器插入孤立 finalizer，以确保命名空间下的所有资源在删除之前已经被完全清除。
+	//这样，命名空间才能最终安全地删除，而不留下任何子资源。
 	background := metav1.DeletePropagationBackground
 	opts := metav1.DeleteOptions{PropagationPolicy: &background}
+	//DeleteCollection 是 Kubernetes 中用于批量删除资源的 API 方法。
+	//它允许你通过指定条件（如筛选、命名空间）来一次性删除多个资源，而不是逐一删除。
 	err := d.metadataClient.Resource(gvr).Namespace(namespace).DeleteCollection(ctx, opts, metav1.ListOptions{})
 	if err == nil {
 		return true, nil
 	}
-
+	//如果报错，就是删除失败
 	// this is strange, but we need to special case for both MethodNotSupported and NotFound errors
 	// TODO: https://github.com/kubernetes/kubernetes/issues/22413
 	// we have a resource returned in the discovery API that supports no top-level verbs:
 	//  /apis/extensions/v1beta1/namespaces/default/replicationcontrollers
 	// when working with this resource type, we will get a literal not found error rather than expected method not supported
+	// 在 Kubernetes 中，某些资源，如 replicationcontrollers 等较早期的资源类型，可能在某些特定 API 版本中不支持顶级操作（如 DELETE 操作），
+	//或者它们会返回较旧的错误类型。这种情况下，错误的实际含义可能并不是 MethodNotSupported（方法不被支持），而是资源没有找到或没有删除的权限，
+	//程序需要按这种特殊情况处理。
+	//
+	//deleteCollection 不被支持：某些旧的资源类型不支持使用 deleteCollection 删除所有资源。这样，错误处理就会特意把 MethodNotSupported 或 NotFound 错误排除在外，返回 false 表示不能对这个资源进行批量删除，而不是继续尝试错误的删除操作。
 	if errors.IsMethodNotSupported(err) || errors.IsNotFound(err) {
 		logger.V(5).Info("Namespace controller - deleteCollection not supported", "namespace", namespace, "resource", gvr)
 		return false, nil
@@ -346,6 +389,8 @@ func (d *namespacedResourcesDeleter) deleteCollection(ctx context.Context, gvr s
 //	the list of items in the collection (if found)
 //	a boolean if the operation is supported
 //	an error if the operation is supported but could not be completed.
+//
+// client 去查出当前resource 的所有资源【d.metadataClient.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{})】
 func (d *namespacedResourcesDeleter) listCollection(ctx context.Context, gvr schema.GroupVersionResource, namespace string) (*metav1.PartialObjectMetadataList, bool, error) {
 	logger := klog.FromContext(ctx)
 	logger.V(5).Info("Namespace controller - listCollection", "namespace", namespace, "resource", gvr)
@@ -382,12 +427,22 @@ func (d *namespacedResourcesDeleter) deleteEachItem(ctx context.Context, gvr sch
 	if err != nil {
 		return err
 	}
+	// 如果这个资源都不支持 list 方法，那就没办法了
 	if !listSupported {
 		return nil
 	}
 	for _, item := range partialList.Items {
 		background := metav1.DeletePropagationBackground
 		opts := metav1.DeleteOptions{PropagationPolicy: &background}
+		// 调用单个的删除去删除 resource。
+		// 删除操作的流程：
+		//
+		//首先会触发 UpdateFunc
+		//因为设置删除时间戳是一次更新操作
+		//此时对象的 metadata.deletionTimestamp 被设置
+		//之后会触发 DeleteFunc
+		//当对象真正从 etcd 中删除时
+		//如果对象有 finalizer，则要等 finalizer 被清除后才会真正删除
 		if err = d.metadataClient.Resource(gvr).Namespace(namespace).Delete(ctx, item.GetName(), opts); err != nil && !errors.IsNotFound(err) && !errors.IsMethodNotSupported(err) {
 			return err
 		}
@@ -408,6 +463,9 @@ type gvrDeletionMetadata struct {
 // deleteAllContentForGroupVersionResource will use the dynamic client to delete each resource identified in gvr.
 // It returns an estimate of the time remaining before the remaining resources are deleted.
 // If estimate > 0, not all resources are guaranteed to be gone.
+// deleteAllContentForGroupVersionResource 将使用动态客户端删除在 gvr 中标识的每个资源。
+// 它返回一个估计的时间，表示剩余资源被删除前的预估时间。
+// 如果估计时间 > 0，说明并不能保证所有资源已经删除完毕。
 func (d *namespacedResourcesDeleter) deleteAllContentForGroupVersionResource(
 	ctx context.Context,
 	gvr schema.GroupVersionResource, namespace string,
@@ -430,6 +488,8 @@ func (d *namespacedResourcesDeleter) deleteAllContentForGroupVersionResource(
 	}
 
 	// delete collection was not supported, so we list and delete each item...
+	// 这段代码是 Kubernetes 中 deleteCollection 操作的一个特殊处理步骤。
+	//当服务器不支持批量删除（即无法删除一个集合的资源），程序会回退到逐一删除资源的方法。
 	if !deleteCollectionSupported {
 		err = d.deleteEachItem(ctx, gvr, namespace)
 		if err != nil {
@@ -440,6 +500,7 @@ func (d *namespacedResourcesDeleter) deleteAllContentForGroupVersionResource(
 	// verify there are no more remaining items
 	// it is not an error condition for there to be remaining items if local estimate is non-zero
 	logger.V(5).Info("Namespace controller - deleteAllContentForGroupVersionResource - checking for no more items in namespace", "namespace", namespace, "resource", gvr)
+	// 检查 namespace 下没有剩余了
 	unstructuredList, listSupported, err := d.listCollection(ctx, gvr, namespace)
 	if err != nil {
 		logger.V(5).Info("Namespace controller - deleteAllContentForGroupVersionResource - error verifying no items in namespace", "namespace", namespace, "resource", gvr, "err", err)
@@ -451,10 +512,12 @@ func (d *namespacedResourcesDeleter) deleteAllContentForGroupVersionResource(
 	logger.V(5).Info("Namespace controller - deleteAllContentForGroupVersionResource - items remaining", "namespace", namespace, "resource", gvr, "items", len(unstructuredList.Items))
 	if len(unstructuredList.Items) == 0 {
 		// we're done
+		// 没剩余了 返回
 		return gvrDeletionMetadata{finalizerEstimateSeconds: 0, numRemaining: 0}, nil
 	}
 
 	// use the list to find the finalizers
+	// 还 tm 有剩下的 拿到 finalizer
 	finalizersToNumRemaining := map[string]int{}
 	for _, item := range unstructuredList.Items {
 		for _, finalizer := range item.GetFinalizers() {
@@ -462,12 +525,14 @@ func (d *namespacedResourcesDeleter) deleteAllContentForGroupVersionResource(
 		}
 	}
 
+	// 如果还没超过优雅删除定义的阈值
 	if estimate != int64(0) {
 		logger.V(5).Info("Namespace controller - deleteAllContentForGroupVersionResource - estimate is present", "namespace", namespace, "resource", gvr, "finalizers", finalizersToNumRemaining)
+		// 返回删除元数据
 		return gvrDeletionMetadata{
-			finalizerEstimateSeconds: estimate,
-			numRemaining:             len(unstructuredList.Items),
-			finalizersToNumRemaining: finalizersToNumRemaining,
+			finalizerEstimateSeconds: estimate,                    // 预计需要多少秒完成删除
+			numRemaining:             len(unstructuredList.Items), // 还有多少资源待删除
+			finalizersToNumRemaining: finalizersToNumRemaining,    // 每种 finalizer 还剩多少资源
 		}, nil
 	}
 
@@ -498,6 +563,7 @@ type allGVRDeletionMetadata struct {
 // deleteAllContent will use the dynamic client to delete each resource identified in groupVersionResources.
 // It returns an estimate of the time remaining before the remaining resources are deleted.
 // If estimate > 0, not all resources are guaranteed to be gone.
+// client 调用delete 删除所有的资源，如果estimate大于 0，代表有优雅删除的时间要等（猜的）
 func (d *namespacedResourcesDeleter) deleteAllContent(ctx context.Context, ns *v1.Namespace) (int64, error) {
 	namespace := ns.Name
 	namespaceDeletedAt := *ns.DeletionTimestamp
@@ -506,7 +572,7 @@ func (d *namespacedResourcesDeleter) deleteAllContent(ctx context.Context, ns *v
 	estimate := int64(0)
 	logger := klog.FromContext(ctx)
 	logger.V(4).Info("namespace controller - deleteAllContent", "namespace", namespace)
-
+	//找到需要删除的挂在这个 namespace 下的 resource 比如 pod、configmap...
 	resources, err := d.discoverResourcesFn()
 	if err != nil {
 		// discovery errors are not fatal.  We often have some set of resources we can operate against even if we don't have a complete list
@@ -514,7 +580,9 @@ func (d *namespacedResourcesDeleter) deleteAllContent(ctx context.Context, ns *v
 		conditionUpdater.ProcessDiscoverResourcesErr(err)
 	}
 	// TODO(sttts): get rid of opCache and pass the verbs (especially "deletecollection") down into the deleter
+	// 这一部分表明筛选条件是资源必须支持 "delete" 动作。
 	deletableResources := discovery.FilteredBy(discovery.SupportsAllVerbs{Verbs: []string{"delete"}}, resources)
+	//根据 group version 把 resource 分组
 	groupVersionResources, err := discovery.GroupVersionResources(deletableResources)
 	if err != nil {
 		// discovery errors are not fatal.  We often have some set of resources we can operate against even if we don't have a complete list
@@ -526,7 +594,12 @@ func (d *namespacedResourcesDeleter) deleteAllContent(ctx context.Context, ns *v
 		gvrToNumRemaining:        map[schema.GroupVersionResource]int{},
 		finalizersToNumRemaining: map[string]int{},
 	}
+	//资源删除和finalizer处理：针对每一种 groupVersionResource 资源，调用删除方法删除该类型资源，并收集删除的元数据。
+	//错误收集和错误处理：即使删除某种资源时出现错误，也会继续删除其他资源，同时记录错误信息。
+	//时间估算和资源统计：计算删除操作的总时间估算，并更新每个资源类型和其 finalizer 的处理进度。
+	//删除进度更新：最终更新命名空间状态，包括删除进度和可能未处理的 finalizer。
 	for gvr := range groupVersionResources {
+		// 删除这种 resource，gvrDeletionMetadata是剩余的没删掉的和finalizer数量
 		gvrDeletionMetadata, err := d.deleteAllContentForGroupVersionResource(ctx, gvr, namespace, namespaceDeletedAt)
 		if err != nil {
 			// If there is an error, hold on to it but proceed with all the remaining
@@ -534,6 +607,7 @@ func (d *namespacedResourcesDeleter) deleteAllContent(ctx context.Context, ns *v
 			errs = append(errs, err)
 			conditionUpdater.ProcessDeleteContentErr(err)
 		}
+		// 找出最长时间
 		if gvrDeletionMetadata.finalizerEstimateSeconds > estimate {
 			estimate = gvrDeletionMetadata.finalizerEstimateSeconds
 		}
@@ -552,6 +626,7 @@ func (d *namespacedResourcesDeleter) deleteAllContent(ctx context.Context, ns *v
 	// we always want to update the conditions because if we have set a condition to "it worked" after it was previously, "it didn't work",
 	// we need to reflect that information.  Recall that additional finalizers can be set on namespaces, so this finalizer may clear itself and
 	// NOT remove the resource instance.
+	// 确保在命名空间的条件发生改变时，会及时更新命名空间的状态，以反映资源是否删除、finalizer 是否已清除等状态。
 	if hasChanged := conditionUpdater.Update(ns); hasChanged {
 		if _, err = d.nsClient.UpdateStatus(ctx, ns, metav1.UpdateOptions{}); err != nil {
 			utilruntime.HandleError(fmt.Errorf("couldn't update status condition for namespace %q: %v", namespace, err))
@@ -587,6 +662,7 @@ func (d *namespacedResourcesDeleter) estimateGracefulTermination(ctx context.Con
 }
 
 // estimateGracefulTerminationForPods determines the graceful termination period for pods in the namespace
+// 这个函数的作用是通过检查指定命名空间中所有 Pod 的 TerminationGracePeriodSeconds 设置，来估算最长期限，即找出命名空间下所有 Pod 的最长优雅终止时间
 func (d *namespacedResourcesDeleter) estimateGracefulTerminationForPods(ctx context.Context, ns string) (int64, error) {
 	klog.FromContext(ctx).V(5).Info("Namespace controller - estimateGracefulTerminationForPods", "namespace", ns)
 	estimate := int64(0)

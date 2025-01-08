@@ -200,6 +200,10 @@ type DefaultPluginHandler struct {
 
 // NewDefaultPluginHandler instantiates the DefaultPluginHandler with a list of
 // given filename prefixes used to identify valid plugin filenames.
+// NewDefaultPluginHandler 函数的作用是根据传入的一组有效的文件名前缀（validPrefixes），
+// 创建并初始化一个 DefaultPluginHandler 实例。
+// 返回的 *DefaultPluginHandler 对象可能会在后续的插件处理过程中使用，
+// 确保插件文件符合这些有效前缀。
 func NewDefaultPluginHandler(validPrefixes []string) *DefaultPluginHandler {
 	return &DefaultPluginHandler{
 		ValidPrefixes: validPrefixes,
@@ -311,6 +315,8 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 	warningHandler := rest.NewWarningWriter(o.IOStreams.ErrOut, rest.WarningWriterOptions{Deduplicate: true, Color: term.AllowsColorOutput(o.IOStreams.ErrOut)})
 	warningsAsErrors := false
 	// Parent command to which all subcommands are added.
+	//Short 和 Long 字段提供了该命令的简短描述和详细说明，通常会出现在 kubectl --help 中。
+	//Run: runHelp：如果没有传入任何子命令，默认执行 runHelp 函数
 	cmds := &cobra.Command{
 		Use:   "kubectl",
 		Short: i18n.T("kubectl controls the Kubernetes cluster manager"),
@@ -322,21 +328,26 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 		Run: runHelp,
 		// Hook before and after Run initialize and write profiles to disk,
 		// respectively.
+		//在任何子命令运行前执行的钩子函数。这里，它设置了默认的警告处理器，并处理一些其他初始化操作。
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			rest.SetDefaultWarningHandler(warningHandler)
 
 			if cmd.Name() == cobra.ShellCompRequestCmd {
 				// This is the __complete or __completeNoDesc command which
 				// indicates shell completion has been requested.
+				// 如果请求的是 shell 补全命令（__complete），则会进行插件的自动补全设置。
 				plugin.SetupPluginCompletion(cmd, args)
 			}
-
+			//调用 initProfiling() 初始化性能分析。
 			return initProfiling()
 		},
+		// 在子命令执行后调用的钩子函数。
 		PersistentPostRunE: func(*cobra.Command, []string) error {
+			// 刷新性能分析数据（flushProfiling()）。
 			if err := flushProfiling(); err != nil {
 				return err
 			}
+			// 如果 warningsAsErrors 设置为 true，检查警告数量并将其作为错误处理。
 			if warningsAsErrors {
 				count := warningHandler.WarningCount()
 				switch count {
@@ -358,9 +369,8 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 	flags := cmds.PersistentFlags()
 
 	addProfilingFlags(flags)
-
 	flags.BoolVar(&warningsAsErrors, "warnings-as-errors", warningsAsErrors, "Treat warnings received from the server as errors and exit with a non-zero exit code")
-
+	//通过 ConfigFlags 来处理 kubeconfig 文件的配置选项。如果没有提供配置，使用默认的配置并添加相应的标志。
 	kubeConfigFlags := o.ConfigFlags
 	if kubeConfigFlags == nil {
 		kubeConfigFlags = defaultConfigFlags().WithWarningPrinter(o.IOStreams)
@@ -381,9 +391,12 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 	}
 
 	// Avoid import cycle by setting ValidArgsFunction here instead of in NewCmdGet()
+	// 创建一个 get 命令，用于查询 Kubernetes 资源，并为其配置自动补全功能。
 	getCmd := get.NewCmdGet("kubectl", f, o.IOStreams)
 	getCmd.ValidArgsFunction = utilcomp.ResourceTypeAndNameCompletionFunc(f)
-
+	//定义多个命令组，每个命令组下包含不同的子命令。例如：
+	//Basic Commands (Beginner)：包含 create、expose、run 等基础命令。
+	//Basic Commands (Intermediate)：包含 explain、get、edit 等中级命令
 	groups := templates.CommandGroups{
 		{
 			Message: "Basic Commands (Beginner):",
@@ -478,7 +491,7 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 
 	utilcomp.SetFactoryForCompletion(f)
 	registerCompletionFuncForGlobalFlags(cmds, f)
-
+	//将各种子命令添加到根命令中，例如 alpha、config、plugin、version 等
 	cmds.AddCommand(alpha)
 	cmds.AddCommand(cmdconfig.NewCmdConfig(f, clientcmd.NewDefaultPathOptions(), o.IOStreams))
 	cmds.AddCommand(plugin.NewCmdPlugin(o.IOStreams))

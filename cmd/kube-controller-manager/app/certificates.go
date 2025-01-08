@@ -198,6 +198,7 @@ func startCertificateSigningRequestCleanerController(ctx context.Context, contro
 	return nil, true, nil
 }
 
+// 监听每个namespace的变更，保证每个namespace下都有root ca
 func newRootCACertificatePublisherControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.RootCACertificatePublisherController,
@@ -225,6 +226,8 @@ func startRootCACertificatePublisherController(ctx context.Context, controllerCo
 	return nil, true, nil
 }
 
+// KubeAPIServerSignerClusterTrustBundledPublisher 是 Kubernetes 中与证书和信任链相关的组件。
+// 它的主要作用是将根证书、信任链和证书签名信息提供给 API Server，并确保 Kubernetes 集群内的所有组件都能够正确验证和信任这些证书。
 func newKubeAPIServerSignerClusterTrustBundledPublisherDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:                 names.KubeAPIServerClusterTrustBundlePublisherController,
@@ -234,6 +237,7 @@ func newKubeAPIServerSignerClusterTrustBundledPublisherDescriptor() *ControllerD
 }
 
 func newKubeAPIServerSignerClusterTrustBundledPublisherController(ctx context.Context, controllerContext ControllerContext, controllerName string) (controller.Interface, bool, error) {
+	// 拿到root ca证书
 	rootCA, err := getKubeAPIServerCAFileContents(controllerContext)
 	if err != nil {
 		return nil, false, err
@@ -271,6 +275,10 @@ func newKubeAPIServerSignerClusterTrustBundledPublisherController(ctx context.Co
 	return nil, true, nil
 }
 
+// 这段代码的作用是检查 Kubernetes 集群中是否存在名为 clustertrustbundles 的 API 资源。
+// 具体来说，它会通过 Kubernetes 客户端查询集群的 API 资源，
+// 判断 certificates.k8s.io API 组（certificatesv1alpha1 组）中是否有 clustertrustbundles 这个资源。如果存在该资源，
+// 则返回 true，否则返回 false
 func clusterTrustBundlesAvailable(client kubernetes.Interface) (bool, error) {
 	resList, err := client.Discovery().ServerResourcesForGroupVersion(certificatesv1alpha1.SchemeGroupVersion.String())
 

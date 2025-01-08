@@ -177,7 +177,6 @@ func NewHorizontalController(
 
 	hpaController.podLister = podInformer.Lister()
 	hpaController.podListerSynced = podInformer.Informer().HasSynced
-
 	replicaCalc := NewReplicaCalculator(
 		metricsClient,
 		hpaController.podLister,
@@ -213,6 +212,7 @@ func (a *HorizontalController) Run(ctx context.Context, workers int) {
 }
 
 // obj could be an *v1.HorizontalPodAutoscaler, or a DeletionFinalStateUnknown marker item.
+// old 是更新前的 HPA 对象，通常这个对象在更新时不会被直接处理。如果 old 中的内容已过时或不再是最新状态，那么它本身已经不是重点关注的资源。
 func (a *HorizontalController) updateHPA(old, cur interface{}) {
 	a.enqueueHPA(cur)
 }
@@ -233,6 +233,8 @@ func (a *HorizontalController) enqueueHPA(obj interface{}) {
 	// Register HPA in the hpaSelectors map if it's not present yet. Attaching the Nothing selector
 	// that does not select objects. The actual selector is going to be updated
 	// when it's available during the autoscaler reconciliation.
+	// 确保在 hpaSelectors 映射中注册一个选择器，且初始选择器为空选择器。
+	//这个选择器的实际选择条件（即非空选择器）会在后续的自动扩容器（autoscaler）同步（reconciliation）时进行更新。
 	a.hpaSelectorsMux.Lock()
 	defer a.hpaSelectorsMux.Unlock()
 	if hpaKey := selectors.Parse(key); !a.hpaSelectors.SelectorExists(hpaKey) {
@@ -296,6 +298,12 @@ func (a *HorizontalController) processNextWorkItem(ctx context.Context) bool {
 // It may return both valid metricDesiredReplicas and an error,
 // when some metrics still work and HPA should perform scaling based on them.
 // If HPA cannot do anything due to error, it returns -1 in metricDesiredReplicas as a failure signal.
+// computeReplicasForMetrics 计算 HPA（Horizontal Pod Autoscaler）中列出的度量规范所需的副本数，
+// 返回计算出的副本数的最大值、相关度量的描述以及所有计算完成的度量状态。
+//
+// 它可能同时返回有效的 metricDesiredReplicas 和一个错误，
+// 当某些度量仍然正常工作时，HPA 应该基于它们执行扩缩容操作。
+// 如果由于错误导致 HPA 无法执行任何操作，它会在 metricDesiredReplicas 中返回 -1 作为失败信号。
 func (a *HorizontalController) computeReplicasForMetrics(ctx context.Context, hpa *autoscalingv2.HorizontalPodAutoscaler, scale *autoscalingv1.Scale,
 	metricSpecs []autoscalingv2.MetricSpec) (replicas int32, metric string, statuses []autoscalingv2.MetricStatus, timestamp time.Time, err error) {
 
@@ -313,6 +321,7 @@ func (a *HorizontalController) computeReplicasForMetrics(ctx context.Context, hp
 	var invalidMetricCondition autoscalingv2.HorizontalPodAutoscalerCondition
 
 	for i, metricSpec := range metricSpecs {
+		// 调用 computeReplicasForMetric 计算单个指标的副本数。
 		replicaCountProposal, metricNameProposal, timestampProposal, condition, err := a.computeReplicasForMetric(ctx, hpa, metricSpec, specReplicas, statusReplicas, selector, &statuses[i])
 
 		if err != nil {
@@ -380,6 +389,13 @@ func (a *HorizontalController) hpasControllingPodsUnderSelector(pods []*v1.Pod) 
 // - all pods by current selector are controlled by only one HPA.
 // Returns an error if the check has failed or the parsed selector if succeeded.
 // In case of an error the ScalingActive is set to false with the corresponding reason.
+// // validateAndParseSelector 验证以下内容：
+// // - selector 不为空；
+// // - selector 的格式有效；
+// // - 当前 selector 匹配的所有 Pod 都只被一个 HPA 控制。
+// //
+// // 如果检查失败，则返回一个错误；如果检查成功，则返回解析后的 selector。
+// // 在发生错误的情况下，ScalingActive 将被设置为 false，同时记录相应的原因。
 func (a *HorizontalController) validateAndParseSelector(hpa *autoscalingv2.HorizontalPodAutoscaler, selector string) (labels.Selector, error) {
 	if selector == "" {
 		errMsg := "selector is required"
@@ -422,6 +438,8 @@ func (a *HorizontalController) validateAndParseSelector(hpa *autoscalingv2.Horiz
 
 // Computes the desired number of replicas for a specific hpa and metric specification,
 // returning the metric status and a proposed condition to be set on the HPA object.
+// 计算特定 HPA 和度量规范所需的目标副本数，
+// 返回度量状态以及一个建议设置在 HPA 对象上的条件。
 func (a *HorizontalController) computeReplicasForMetric(ctx context.Context, hpa *autoscalingv2.HorizontalPodAutoscaler, spec autoscalingv2.MetricSpec,
 	specReplicas, statusReplicas int32, selector labels.Selector, status *autoscalingv2.MetricStatus) (replicaCountProposal int32, metricNameProposal string,
 	timestampProposal time.Time, condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
@@ -503,6 +521,7 @@ func (a *HorizontalController) reconcileKey(ctx context.Context, key string) (de
 	logger := klog.FromContext(ctx)
 
 	hpa, err := a.hpaLister.HorizontalPodAutoscalers(namespace).Get(name)
+	// 如果 HPA 已删除，清理相关缓存并返回
 	if k8serrors.IsNotFound(err) {
 		logger.Info("Horizontal Pod Autoscaler has been deleted", "HPA", klog.KRef(namespace, name))
 
@@ -523,13 +542,23 @@ func (a *HorizontalController) reconcileKey(ctx context.Context, key string) (de
 	if err != nil {
 		return false, err
 	}
-
+	//如果 HPA 存在，调用 reconcileAutoscaler 方法进行进一步处理。
 	return false, a.reconcileAutoscaler(ctx, hpa, key)
 }
 
 // computeStatusForObjectMetric computes the desired number of replicas for the specified metric of type ObjectMetricSourceType.
+//
+//	specReplicas,            // 期望的副本数（通常是 HPA 配置中的 `spec`）
+//	statusReplicas int32,    // 当前实际的副本数
+//	metricSpec autoscalingv2.MetricSpec,  // 描述指标配置的 `MetricSpec`
+//	hpa *autoscalingv2.HorizontalPodAutoscaler,  // HPA 资源对象本身
+//	selector labels.Selector,  // 用于筛选目标 Pod 的选择器
+//	status *autoscalingv2.MetricStatus,  // 通过指针更新的当前指标状态
+//	metricSelector labels.Selector,  // 用于筛选指标数据的选择器
 func (a *HorizontalController) computeStatusForObjectMetric(specReplicas, statusReplicas int32, metricSpec autoscalingv2.MetricSpec, hpa *autoscalingv2.HorizontalPodAutoscaler, selector labels.Selector, status *autoscalingv2.MetricStatus, metricSelector labels.Selector) (replicas int32, timestamp time.Time, metricName string, condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
+	// 如果是一个绝对值指标，使用目标值 Value。
 	if metricSpec.Object.Target.Type == autoscalingv2.ValueMetricType && metricSpec.Object.Target.Value != nil {
+		// 算出期望的 pod 数
 		replicaCountProposal, usageProposal, timestampProposal, err := a.replicaCalc.GetObjectMetricReplicas(specReplicas, metricSpec.Object.Target.Value.MilliValue(), metricSpec.Object.Metric.Name, hpa.Namespace, &metricSpec.Object.DescribedObject, selector, metricSelector)
 		if err != nil {
 			condition := a.getUnableComputeReplicaCountCondition(hpa, "FailedGetObjectMetric", err)
@@ -550,6 +579,7 @@ func (a *HorizontalController) computeStatusForObjectMetric(specReplicas, status
 		}
 		return replicaCountProposal, timestampProposal, fmt.Sprintf("%s metric %s", metricSpec.Object.DescribedObject.Kind, metricSpec.Object.Metric.Name), autoscalingv2.HorizontalPodAutoscalerCondition{}, nil
 	} else if metricSpec.Object.Target.Type == autoscalingv2.AverageValueMetricType && metricSpec.Object.Target.AverageValue != nil {
+		// 算出期望的 pod 数
 		replicaCountProposal, usageProposal, timestampProposal, err := a.replicaCalc.GetObjectPerPodMetricReplicas(statusReplicas, metricSpec.Object.Target.AverageValue.MilliValue(), metricSpec.Object.Metric.Name, hpa.Namespace, &metricSpec.Object.DescribedObject, metricSelector)
 		if err != nil {
 			condition := a.getUnableComputeReplicaCountCondition(hpa, "FailedGetObjectMetric", err)
@@ -602,6 +632,14 @@ func (a *HorizontalController) computeStatusForResourceMetricGeneric(ctx context
 	resourceName v1.ResourceName, namespace string, container string, selector labels.Selector, sourceType autoscalingv2.MetricSourceType) (replicaCountProposal int32,
 	metricStatus *autoscalingv2.MetricValueStatus, timestampProposal time.Time, metricNameProposal string,
 	condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
+	// 如果有目标值
+	// - type: Pods
+	//  pods:
+	//    metric:
+	//      name: "requests_per_second"
+	//    target:
+	//      type: AverageValue
+	//      averageValue: 10
 	if target.AverageValue != nil {
 		var rawProposal int64
 		replicaCountProposal, rawProposal, timestampProposal, err := a.replicaCalc.GetRawResourceReplicas(ctx, currentReplicas, target.AverageValue.MilliValue(), resourceName, namespace, selector, container)
@@ -614,13 +652,21 @@ func (a *HorizontalController) computeStatusForResourceMetricGeneric(ctx context
 		}
 		return replicaCountProposal, &status, timestampProposal, metricNameProposal, autoscalingv2.HorizontalPodAutoscalerCondition{}, nil
 	}
-
+	// 这条错误信息意味着在配置资源度量（resource metric）时，既没有设置平均利用率目标（average utilization target）
+	//也没有设置平均值（usage）
+	// - type: Resource
+	//  resource:
+	//    name: "cpu"
+	//    target:
+	//      type: AverageUtilization
+	//      averageUtilization: 50
 	if target.AverageUtilization == nil {
 		errMsg := "invalid resource metric source: neither an average utilization target nor an average value (usage) target was set"
 		return 0, nil, time.Time{}, "", condition, errors.New(errMsg)
 	}
 
 	targetUtilization := *target.AverageUtilization
+	// 算出来需要的 pod
 	replicaCountProposal, percentageProposal, rawProposal, timestampProposal, err := a.replicaCalc.GetResourceReplicas(ctx, currentReplicas, targetUtilization, resourceName, namespace, selector, container)
 	if err != nil {
 		return 0, nil, time.Time{}, "", condition, fmt.Errorf("failed to get %s utilization: %v", resourceName, err)
@@ -734,6 +780,8 @@ func (a *HorizontalController) recordInitialRecommendation(currentReplicas int32
 
 func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShared *autoscalingv2.HorizontalPodAutoscaler, key string) (retErr error) {
 	// actionLabel is used to report which actions this reconciliation has taken.
+	// // ActionLabel用于报告该 reconciliation 采取了哪些行动。
+	// scale_up、scale_down、none
 	actionLabel := monitor.ActionLabelNone
 	start := time.Now()
 	defer func() {
@@ -754,7 +802,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 	hpaStatusOriginal := hpa.Status.DeepCopy()
 
 	reference := fmt.Sprintf("%s/%s/%s", hpa.Spec.ScaleTargetRef.Kind, hpa.Namespace, hpa.Spec.ScaleTargetRef.Name)
-
+	// 判断是否是合法的 groupversion
 	targetGV, err := schema.ParseGroupVersion(hpa.Spec.ScaleTargetRef.APIVersion)
 	if err != nil {
 		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
@@ -769,7 +817,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 		Group: targetGV.Group,
 		Kind:  hpa.Spec.ScaleTargetRef.Kind,
 	}
-
+	// 拿到hpa.Spec.ScaleTargetRef.Kind对应的所有资源
 	mappings, err := a.mapper.RESTMappings(targetGK)
 	if err != nil {
 		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
@@ -779,7 +827,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 		}
 		return fmt.Errorf("unable to determine resource for scale target reference: %v", err)
 	}
-
+	// 拿到目标资源定义的 Scale的replicas
 	scale, targetGR, err := a.scaleForResourceMappings(ctx, hpa.Namespace, hpa.Spec.ScaleTargetRef.Name, mappings)
 	if err != nil {
 		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
@@ -1328,6 +1376,23 @@ func calculateScaleDownLimitWithBehaviors(currentReplicas int32, scaleUpEvents, 
 // in turn until a working one is found.  If none work, the first error
 // is returned.  It returns both the scale, as well as the group-resource from
 // the working mapping.
+// scaleForResourceMappings 尝试获取指定名称和命名空间的资源的scale信息，依次尝试每个 RESTMapping，直到找到有效的一个。
+// 如果没有找到有效的 RESTMapping，则返回第一个错误。
+// 它返回资源的缩放信息，以及找到的有效映射对应的组/资源（group-resource）。
+// apiVersion: apps/v1
+// kind: Scale
+// metadata:
+//
+//	name: example-deployment
+//	namespace: default
+//	# 资源的名称通常与相关的 Deployment 或 ReplicaSet 一致
+//
+// spec:
+//
+//	replicas: 3
+//	selector:
+//	  matchLabels:
+//	    app: example-app
 func (a *HorizontalController) scaleForResourceMappings(ctx context.Context, namespace, name string, mappings []*apimeta.RESTMapping) (*autoscalingv1.Scale, schema.GroupResource, error) {
 	var firstErr error
 	for i, mapping := range mappings {

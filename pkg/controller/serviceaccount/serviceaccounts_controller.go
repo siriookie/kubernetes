@@ -61,6 +61,16 @@ func DefaultServiceAccountsControllerOptions() ServiceAccountsControllerOptions 
 }
 
 // NewServiceAccountsController returns a new *ServiceAccountsController.
+// 官网介绍：
+// 监视 ServiceAccount 删除并删除所有相应的 ServiceAccount 令牌 Secret。
+// 监视 ServiceAccount token Secret 添加，并确保引用的 ServiceAccount 存在，并在需要时向 Secret 添加令牌。
+// 监视 Secret 删除并根据需要从相应的 ServiceAccount 中删除引用。
+// 实际观察：
+// 监听 serviceAccount 的删除
+// 监听 namespace 的创建
+// 监听 namespace 的更新
+// 实际作用：
+// 确保每个namespace下都有default controller
 func NewServiceAccountsController(saInformer coreinformers.ServiceAccountInformer, nsInformer coreinformers.NamespaceInformer, cl clientset.Interface, options ServiceAccountsControllerOptions) (*ServiceAccountsController, error) {
 	e := &ServiceAccountsController{
 		client:                  cl,
@@ -192,6 +202,7 @@ func (c *ServiceAccountsController) syncNamespace(ctx context.Context, key strin
 	if err != nil {
 		return err
 	}
+	// 如果状态是删除的 namespace 就不要管了
 	if ns.Status.Phase != v1.NamespaceActive {
 		// If namespace is not active, we shouldn't try to create anything
 		return nil

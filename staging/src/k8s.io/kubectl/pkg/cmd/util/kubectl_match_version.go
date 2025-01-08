@@ -67,7 +67,10 @@ func (f *MatchVersionFlags) checkMatchingServerVersion() error {
 // Returns a REST client configuration based on a provided path
 // to a .kubeconfig file, loading rules, and config flag overrides.
 // Expects the AddFlags method to have been called.
+// ToRESTConfig 方法的目的是从 MatchVersionFlags 配置中生成一个有效的 Kubernetes RESTConfig 配置。具体流程包括：
 func (f *MatchVersionFlags) ToRESTConfig() (*rest.Config, error) {
+	// 首先，方法会调用 checkMatchingServerVersion 来确保客户端请求的 Kubernetes 版本与服务器的版本匹配。
+	//如果版本不匹配，这个方法会返回一个错误。在这种情况下，ToRESTConfig 会返回 nil 和错误。
 	if err := f.checkMatchingServerVersion(); err != nil {
 		return nil, err
 	}

@@ -63,10 +63,12 @@ func NewReplicaCalculator(metricsClient metricsclient.MetricsClient, podLister c
 // GetResourceReplicas calculates the desired replica count based on a target resource utilization percentage
 // of the given resource for pods matching the given selector in the given namespace, and the current replica count
 func (c *ReplicaCalculator) GetResourceReplicas(ctx context.Context, currentReplicas int32, targetUtilization int32, resource v1.ResourceName, namespace string, selector labels.Selector, container string) (replicaCount int32, utilization int32, rawUtilization int64, timestamp time.Time, err error) {
+	// 拿到select 出来的 pod 的 resource 的 metrics，以【】podmetrics 的形式返回
 	metrics, timestamp, err := c.metricsClient.GetResourceMetric(ctx, resource, namespace, selector, container)
 	if err != nil {
 		return 0, 0, 0, time.Time{}, fmt.Errorf("unable to get metrics for resource %s: %v", resource, err)
 	}
+	// 拿到 pod
 	podList, err := c.podLister.Pods(namespace).List(selector)
 	if err != nil {
 		return 0, 0, 0, time.Time{}, fmt.Errorf("unable to get pods while calculating replica count: %v", err)
@@ -74,7 +76,7 @@ func (c *ReplicaCalculator) GetResourceReplicas(ctx context.Context, currentRepl
 	if len(podList) == 0 {
 		return 0, 0, 0, time.Time{}, fmt.Errorf("no pods returned by selector while calculating replica count")
 	}
-
+	// pod 分组
 	readyPodCount, unreadyPods, missingPods, ignoredPods := groupPods(podList, metrics, resource, c.cpuInitializationPeriod, c.delayOfInitialReadinessStatus)
 	removeMetricsForPods(metrics, ignoredPods)
 	removeMetricsForPods(metrics, unreadyPods)
@@ -86,7 +88,7 @@ func (c *ReplicaCalculator) GetResourceReplicas(ctx context.Context, currentRepl
 	if err != nil {
 		return 0, 0, 0, time.Time{}, err
 	}
-
+	// 实际使用率与目标使用率之比、目前的指标除以 pod request、目标的指标除 pod 数量
 	usageRatio, utilization, rawUtilization, err := metricsclient.GetResourceUtilizationRatio(metrics, requests, targetUtilization)
 	if err != nil {
 		return 0, 0, 0, time.Time{}, err
@@ -100,6 +102,7 @@ func (c *ReplicaCalculator) GetResourceReplicas(ctx context.Context, currentRepl
 		}
 
 		// if we don't have any unready or missing pods, we can calculate the new replica count now
+		// 没有pending 的 pod 和 missing 的 pod，所以计算出需要的新 pod 数量 返回
 		return int32(math.Ceil(usageRatio * float64(readyPodCount))), utilization, rawUtilization, timestamp, nil
 	}
 
@@ -151,6 +154,8 @@ func (c *ReplicaCalculator) GetResourceReplicas(ctx context.Context, currentRepl
 
 // GetRawResourceReplicas calculates the desired replica count based on a target resource usage (as a raw milli-value)
 // for pods matching the given selector in the given namespace, and the current replica count
+// // GetRawResourceReplicas 根据目标资源使用量（以原始毫值为单位），
+// // 计算在给定命名空间中，匹配给定选择器的 pods 的所需副本数，以及当前的副本数。
 func (c *ReplicaCalculator) GetRawResourceReplicas(ctx context.Context, currentReplicas int32, targetUsage int64, resource v1.ResourceName, namespace string, selector labels.Selector, container string) (replicaCount int32, usage int64, timestamp time.Time, err error) {
 	metrics, timestamp, err := c.metricsClient.GetResourceMetric(ctx, resource, namespace, selector, container)
 	if err != nil {
@@ -175,6 +180,12 @@ func (c *ReplicaCalculator) GetMetricReplicas(currentReplicas int32, targetUsage
 }
 
 // calcPlainMetricReplicas calculates the desired replicas for plain (i.e. non-utilization percentage) metrics.
+// calcPlainMetricReplicas 函数的确只关注现有的 Pods 状态，尤其是以下三种情况：
+//
+// Pending 状态的 Pod（尚未就绪）：未能准备好为流量或工作负载服务。
+// Missing Pods（指标丢失的 Pods）：没有上报指标，可能是短暂失联或某些 Pod 的异常。
+// Ready Pods（已就绪的 Pods）：正在正常运行的 Pods，并被用于计算资源利用率
+// 并不直接负责“创建新 Pod”
 func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMetricsInfo, currentReplicas int32, targetUsage int64, namespace string, selector labels.Selector, resource v1.ResourceName) (replicaCount int32, usage int64, err error) {
 
 	podList, err := c.podLister.Pods(namespace).List(selector)
@@ -195,9 +206,13 @@ func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMet
 	}
 
 	usageRatio, usage := metricsclient.GetMetricUsageRatio(metrics, targetUsage)
-
+	// usageRatio > 1.0
+	// 当前的平均使用量 超过了目标值。
+	//说明当前的资源利用情况接近饱和或已经过载。
+	//可能需要触发 扩容操作（Scale Up） 来增加更多的 Pod，分摊负载。
+	// 反之亦然
 	scaleUpWithUnready := len(unreadyPods) > 0 && usageRatio > 1.0
-
+	// 如果没有unready或missing Pod，且资源使用率变化在容差范围内，则返回当前副本数
 	if !scaleUpWithUnready && len(missingPods) == 0 {
 		if math.Abs(1.0-usageRatio) <= c.tolerance {
 			// return the current replicas if the change would be too small
@@ -205,23 +220,26 @@ func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMet
 		}
 
 		// if we don't have any unready or missing pods, we can calculate the new replica count now
+		// 否则，根据资源使用率调整副本数。
 		return int32(math.Ceil(usageRatio * float64(readyPodCount))), usage, nil
 	}
-
+	// missingPods是没有找到资源使用率的 pod
 	if len(missingPods) > 0 {
 		if usageRatio < 1.0 {
 			// on a scale-down, treat missing pods as using exactly the target amount
+			//在缩放时，对missing Pod进行特殊处理（缩小时按目标资源使用，放大时按0%资源使用）。
 			for podName := range missingPods {
 				metrics[podName] = metricsclient.PodMetric{Value: targetUsage}
 			}
 		} else if usageRatio > 1.0 {
+			//放大时按0%资源使用
 			// on a scale-up, treat missing pods as using 0% of the resource request
 			for podName := range missingPods {
 				metrics[podName] = metricsclient.PodMetric{Value: 0}
 			}
 		}
 	}
-
+	// 如果有 pending状态的 pod 并且 要扩容
 	if scaleUpWithUnready {
 		// on a scale-up, treat unready pods as using 0% of the resource request
 		for podName := range unreadyPods {
@@ -230,14 +248,34 @@ func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMet
 	}
 
 	// re-run the usage calculation with our new numbers
+	// 带上 missing 的 pod 和 pending 的 pod重新计算一遍平均值
 	newUsageRatio, _ := metricsclient.GetMetricUsageRatio(metrics, targetUsage)
-
+	// 1.如果差值小于等于一个容忍值 c.tolerance：
+	//说明资源的使用比率变化不够显著。
+	//不需要调整副本数。
+	// 2.如果当前使用比例 usageRatio 小于目标值（资源使用未达标），但新的使用比例 newUsageRatio 超过了目标值：
+	//说明会导致从缩容到扩容的方向变化，这种状态可能会引发频繁调整，称为“抖动”。
+	//因此不调整副本数
+	//3.如果当前使用比例 usageRatio 大于目标值（资源使用超标），但新的使用比例 newUsageRatio 低于目标值：
+	//说明会导致从扩容到缩容的方向变化，也会引起抖动。
+	//同样不调整副本数。
+	// 为避免频繁扩缩容，HPA 引入了一个容忍度（通常默认 10%）。当比例在 0.9 ~ 1.1（具体取决于配置）之间时，HPA 不会采取行动：
+	//
+	//1.0 - Tolerance
+	//≤
+	//usageRatio
+	//≤
+	//1.0 + Tolerance
+	//1.0 - Tolerance≤usageRatio≤1.0 + Tolerance
 	if math.Abs(1.0-newUsageRatio) <= c.tolerance || (usageRatio < 1.0 && newUsageRatio > 1.0) || (usageRatio > 1.0 && newUsageRatio < 1.0) {
 		// return the current replicas if the change would be too small,
 		// or if the new usage ratio would cause a change in scale direction
 		return currentReplicas, usage, nil
 	}
 
+	//新的指标 newUsageRatio < 1.0，表明需要缩容；
+	//但计算得出的副本数却增加了，说明指标不一致或误差。
+	//这种情况说明变化方向不一致，为避免出错，暂停调整。
 	newReplicas := int32(math.Ceil(newUsageRatio * float64(len(metrics))))
 	if (newUsageRatio < 1.0 && newReplicas > currentReplicas) || (newUsageRatio > 1.0 && newReplicas < currentReplicas) {
 		// return the current replicas if the change of metrics length would cause a change in scale direction
@@ -421,6 +459,7 @@ func groupPods(pods []*v1.Pod, metrics metricsclient.PodMetricsInfo, resource v1
 	return
 }
 
+// 计算每个 pod 总的 request 的 resource
 func calculatePodRequests(pods []*v1.Pod, container string, resource v1.ResourceName) (map[string]int64, error) {
 	requests := make(map[string]int64, len(pods))
 	for _, pod := range pods {

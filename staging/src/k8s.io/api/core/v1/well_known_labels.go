@@ -30,6 +30,8 @@ const (
 	// the foreseeable future, to accommodate things like long-lived PVs that
 	// use them.  New users should prefer the "topology.kubernetes.io/*"
 	// equivalents.
+	// 这些标签自 1.17 版本以来已被弃用，但在可预见的未来仍将得到支持，以适应使用这些标签的长期持久卷 (PVs)。
+	// 新用户应优先使用 "topology.kubernetes.io/*" 的等效标签。
 	LabelFailureDomainBetaZone   = "failure-domain.beta.kubernetes.io/zone"   // deprecated
 	LabelFailureDomainBetaRegion = "failure-domain.beta.kubernetes.io/region" // deprecated
 

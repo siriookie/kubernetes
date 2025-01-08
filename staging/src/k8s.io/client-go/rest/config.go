@@ -119,10 +119,24 @@ type Config struct {
 	//
 	// Setting this to a negative value will disable client-side ratelimiting
 	// unless `Ratelimiter` is also set.
+	//作用: 指定客户端每秒可以向 Kubernetes API Server 发起的最大请求数。
+	//默认值: 如果设置为 0，RESTClient 会使用默认值 5。
+	//负值: 如果设置为负值，将禁用客户端速率限制（除非同时设置了 Ratelimiter）。
+	//示例场景:
+	//如果你需要发送大量请求（如监控任务或者资源同步），可以适当增加这个值。
+	//如果你的 API Server 资源有限或者不希望占用过多带宽，可以减少这个值。
 	QPS float32
 
 	// Maximum burst for throttle.
 	// If it's zero, the created RESTClient will use DefaultBurst: 10.
+	//作用: 表示当请求数超过 QPS 限制时，允许的最大突发请求数。
+	//默认值: 如果设置为 0，RESTClient 会使用默认值 10。
+	//关系:
+	//突发限流：Burst 定义了短时间内允许的额外请求数量，用于应对短时间内的请求高峰。
+	//持久速率：QPS 定义了在长期内能够维持的稳定请求速率。
+	//示例场景:
+	//当应用可能出现突发操作（例如大批量删除资源），适当调高 Burst 可减少超时或速率限制的可能。
+	//如果请求负载较平稳，可以将 Burst 设得接近 QPS。
 	Burst int
 
 	// Rate limiter for limiting connections to the master from this client. If present overwrites QPS/Burst

@@ -98,6 +98,10 @@ var (
 		v1.NodeNetworkUnavailable: {
 			v1.ConditionTrue: v1.TaintNodeNetworkUnavailable,
 		},
+		// PID 资源限制: 每个 Linux 系统都有一个进程标识符的限制，通常是由内核参数 pid_max 控制的。这个限制决定了系统中可以同时存在的进程总数。
+		//压力状态:
+		//当一个节点上的进程数接近或达到了该最大限制时，节点会报告 NodePIDPressure 条件为 True。
+		//如果节点的进程数在安全范围内，则该条件为 False。
 		v1.NodePIDPressure: {
 			v1.ConditionTrue: v1.TaintNodePIDPressure,
 		},
@@ -420,6 +424,7 @@ func NewNodeLifecycleController(
 	nc.podLister = podInformer.Lister()
 	nc.nodeLister = nodeInformer.Lister()
 
+	// 将污点管理器和 lifecycle 解耦
 	if !utilfeature.DefaultFeatureGate.Enabled(features.SeparateTaintEvictionController) {
 		logger.Info("Running TaintEvictionController as part of NodeLifecyleController")
 		tm, err := tainteviction.New(ctx, kubeClient, podInformer, nodeInformer, taintEvictionController)
@@ -457,6 +462,10 @@ func NewNodeLifecycleController(
 }
 
 // Run starts an asynchronous loop that monitors the status of cluster nodes.
+// Run 会启动一个异步循环，监视集群节点的状态。
+// node-lifecycle-controller 之前结合了两个独立的功能：
+// 1.根据节点的条件向节点添加一组预定义的NoExecute污点
+// 2. 对NoExecute污点执行 pod 驱逐。
 func (nc *Controller) Run(ctx context.Context) {
 	defer utilruntime.HandleCrash()
 
@@ -480,7 +489,9 @@ func (nc *Controller) Run(ctx context.Context) {
 	if !cache.WaitForNamedCacheSync("taint", ctx.Done(), nc.leaseInformerSynced, nc.nodeInformerSynced, nc.podInformerSynced, nc.daemonSetInformerSynced) {
 		return
 	}
-
+	// 通过配置将污点管理器从 life cycle 解耦
+	// 在 Kubernetes 1.29 版本中，基于污点的驱逐实现已从节点生命周期控制器移至一个名为污点驱逐控制器的单独且独立的组件中。
+	//这种分离的目的是理清代码、增强代码的可维护性并促进未来对任一组件的扩展。
 	if !utilfeature.DefaultFeatureGate.Enabled(features.SeparateTaintEvictionController) {
 		logger.Info("Starting", "controller", taintEvictionController)
 		go nc.taintManager.Run(ctx)
@@ -492,18 +503,27 @@ func (nc *Controller) Run(ctx context.Context) {
 		// the item is flagged when got from queue: if new event come, the new item will
 		// be re-queued until "Done", so no more than one worker handle the same item and
 		// no event missed.
+		// 感谢 "workqueue"，每个工作线程只需要从队列中获取项目，因为
+		// 当从队列中获取项目时，该项目会被标记：如果有新事件发生，新项目将会
+		// 被重新放入队列，直到处理完成，因此不会有多个工作线程处理同一个项目，
+		// 也不会丢失任何事件。
+
 		go wait.UntilWithContext(ctx, nc.doNodeProcessingPassWorker, time.Second)
 	}
 
+	// 监听 pod 变更，如果 pod 在的 node 变不 ready 了，就把 pod 变成不 ready 的
 	for i := 0; i < podUpdateWorkerSize; i++ {
 		go wait.UntilWithContext(ctx, nc.doPodProcessingWorker, time.Second)
 	}
 
 	// Handling taint based evictions. Because we don't want a dedicated logic in TaintManager for NC-originated
 	// taints and we normally don't rate limit evictions caused by taints, we need to rate limit adding taints.
+	// 处理基于污点的驱逐。因为我们不希望在 TaintManager 中为 NC 来源的污点设计专门的逻辑，
+	//并且通常情况下我们不对由污点引起的驱逐进行速率限制，所以我们需要对添加污点进行速率限制。
 	go wait.UntilWithContext(ctx, nc.doNoExecuteTaintingPass, scheduler.NodeEvictionPeriod)
 
 	// Incorporate the results of node health signal pushed from kubelet to master.
+	//合并从kubelet推送到master的节点健康信号的结果。
 	go wait.UntilWithContext(ctx, func(ctx context.Context) {
 		if err := nc.monitorNodeHealth(ctx); err != nil {
 			logger.Error(err, "Error monitoring node health")
@@ -513,6 +533,7 @@ func (nc *Controller) Run(ctx context.Context) {
 	<-ctx.Done()
 }
 
+// 根据 node 的 pressure 状态为node 新增 taint 或者去掉 taint
 func (nc *Controller) doNodeProcessingPassWorker(ctx context.Context) {
 	logger := klog.FromContext(ctx)
 	for {
@@ -549,6 +570,7 @@ func (nc *Controller) doNoScheduleTaintingPass(ctx context.Context, nodeName str
 
 	// Map node's condition to Taints.
 	var taints []v1.Taint
+	// 当 node 的状态不好时，不允许 pod 们调度到这个 node 上来
 	for _, condition := range node.Status.Conditions {
 		if taintMap, found := nodeConditionToTaintKeyStatusMap[condition.Type]; found {
 			if taintKey, found := taintMap[condition.Status]; found {
@@ -568,6 +590,10 @@ func (nc *Controller) doNoScheduleTaintingPass(ctx context.Context, nodeName str
 	}
 
 	// Get exist taints of node.
+	// 找到 node 本身设置的污点
+	//只保留 Effect 为 NoSchedule 的污点。
+	//如果污点的 Key 是 TaintNodeUnschedulable，则保留。
+	//检查污点的 Key 是否存在于 taintKeyToNodeConditionMap 中，如果存在则保留。
 	nodeTaints := taintutils.TaintSetFilter(node.Spec.Taints, func(t *v1.Taint) bool {
 		// only NoSchedule taints are candidates to be compared with "taints" later
 		if t.Effect != v1.TaintEffectNoSchedule {
@@ -581,17 +607,25 @@ func (nc *Controller) doNoScheduleTaintingPass(ctx context.Context, nodeName str
 		_, found := taintKeyToNodeConditionMap[t.Key]
 		return found
 	})
+	// 找到 sepc 和 status的 diff
 	taintsToAdd, taintsToDel := taintutils.TaintSetDiff(taints, nodeTaints)
 	// If nothing to add or delete, return true directly.
 	if len(taintsToAdd) == 0 && len(taintsToDel) == 0 {
 		return nil
 	}
+	// 如果新增了或者减少了 taint
 	if !controllerutil.SwapNodeControllerTaint(ctx, nc.kubeClient, taintsToAdd, taintsToDel, node) {
 		return fmt.Errorf("failed to swap taints of node %+v", node)
 	}
 	return nil
 }
 
+// 提取键：使用锁获取 zoneNoExecuteTainter 的键。
+// 处理每个区域的污点：
+// 对每个区域的污点处理器进行操作。
+// 检查节点是否存在，处理获取节点时的错误。
+// 获取节点的状态，并根据状态决定是否添加或删除污点。
+// 更新污点：调用 SwapNodeControllerTaint 方法来更新节点的污点
 func (nc *Controller) doNoExecuteTaintingPass(ctx context.Context) {
 	// Extract out the keys of the map in order to not hold
 	// the evictorLock for the entire function and hold it
@@ -616,6 +650,8 @@ func (nc *Controller) doNoExecuteTaintingPass(ctx context.Context) {
 			// exists or not is safe to do here since zones do
 			// not get removed, and consequently pod evictors for
 			// these zones also do not get removed, only added.
+			// 在这里提取值而不检查键是否存在是安全的，因为区域不会被移除，
+			//因此这些区域的 Pod 驱逐器也不会被移除，只会被添加。
 			zoneNoExecuteTainterWorker = nc.zoneNoExecuteTainter[k]
 		}()
 		// Function should return 'false' and a time after which it should be retried, or 'true' if it shouldn't (it succeeded).
@@ -636,6 +672,7 @@ func (nc *Controller) doNoExecuteTaintingPass(ctx context.Context) {
 				return false, 50 * time.Millisecond
 			}
 			// Because we want to mimic NodeStatus.Condition["Ready"] we make "unreachable" and "not ready" taints mutually exclusive.
+			//因为我们想要模拟 NodeStatus.Condition["Ready"]，所以将“不可达”和“未就绪”污点设置为互斥关系。
 			taintToAdd := v1.Taint{}
 			oppositeTaint := v1.Taint{}
 			switch condition.Status {
@@ -667,6 +704,13 @@ func (nc *Controller) doNoExecuteTaintingPass(ctx context.Context) {
 //   - add nodes which are not ready or not reachable for a long period of time to a rate-limited
 //     queue so that NoExecute taints can be added by the goroutine running the doNoExecuteTaintingPass function,
 //   - update the PodReady condition Pods according to the state of the Node Ready condition.
+//
+// monitorNodeHealth 函数的主要功能是监控节点的健康状态，确保节点的健康状态信息（由 kubelet 更新）是持续的。如果发现节点的健康状态没有被更新，它将会发布一个 "NodeReady == ConditionUnknown" 的状态。
+//
+// 具体来说，这个函数将执行以下操作：
+//
+// 将长时间未就绪或不可达的节点添加到限速队列：对于那些长时间处于未就绪或不可达状态的节点，将它们添加到一个限速队列中，以便后续可以通过运行 doNoExecuteTaintingPass 函数的 goroutine 添加相应的 NoExecute 污点。
+// 根据节点的就绪状态更新 Pod 的就绪条件：根据节点的就绪条件，更新与该节点关联的 Pods 的就绪状态。
 func (nc *Controller) monitorNodeHealth(ctx context.Context) error {
 	start := nc.now()
 	defer func() {
@@ -675,6 +719,7 @@ func (nc *Controller) monitorNodeHealth(ctx context.Context) error {
 
 	// We are listing nodes from local cache as we can tolerate some small delays
 	// comparing to state from etcd and there is eventual consistency anyway.
+	// 我们从本地缓存中列出节点，因为我们可以容忍与 etcd 中状态相比的一些小延迟，而且反正存在最终一致性。
 	nodes, err := nc.nodeLister.List(labels.Everything())
 	if err != nil {
 		return err
@@ -1112,6 +1157,10 @@ func (nc *Controller) doPodProcessingWorker(ctx context.Context) {
 // 1. for NodeReady=true node, taint eviction for this pod will be cancelled
 // 2. for NodeReady=false or unknown node, taint eviction of pod will happen and pod will be marked as not ready
 // 3. if node doesn't exist in cache, it will be skipped.
+// processPod 正在处理将 Pod 分配给节点的事件。具体而言：
+// 1. 对于 NodeReady=true 的节点，将取消该 Pod 的污点驱逐。
+// 2. 对于 NodeReady=false 或未知状态的节点，将发生 Pod 的污点驱逐，并将 Pod 标记为不就绪。
+// 3. 如果节点在缓存中不存在，将被跳过。
 func (nc *Controller) processPod(ctx context.Context, podItem podUpdateItem) {
 	defer nc.podUpdateQueue.Done(podItem)
 	pod, err := nc.podLister.Pods(podItem.namespace).Get(podItem.name)
@@ -1151,6 +1200,7 @@ func (nc *Controller) processPod(ctx context.Context, podItem podUpdateItem) {
 
 	pods := []*v1.Pod{pod}
 	if currentReadyCondition.Status != v1.ConditionTrue {
+		// 如果 node 不 ready，则把 pod 改成不 ready 的
 		if err := controllerutil.MarkPodsNotReady(ctx, nc.kubeClient, nc.recorder, pods, nodeName); err != nil {
 			logger.Info("Unable to mark pod NotReady on node", "pod", klog.KRef(podItem.namespace, podItem.name), "node", klog.KRef("", nodeName), "err", err)
 			nc.podUpdateQueue.AddRateLimited(podItem)
@@ -1175,6 +1225,11 @@ func (nc *Controller) setLimiterInZone(zone string, zoneSize int, state ZoneStat
 //  1. added: the nodes that in 'allNodes', but not in 'knownNodeSet'
 //  2. deleted: the nodes that in 'knownNodeSet', but not in 'allNodes'
 //  3. newZoneRepresentatives: the nodes that in both 'knownNodeSet' and 'allNodes', but no zone states
+//
+// classifyNodes 将所有节点 (allNodes) 分类为三类：
+//  1. added: 在 'allNodes' 中，但不在 'knownNodeSet' 中的节点
+//  2. deleted: 在 'knownNodeSet' 中，但不在 'allNodes' 中的节点
+//  3. newZoneRepresentatives: 同时在 'knownNodeSet' 和 'allNodes' 中，但没有区域状态的节点
 func (nc *Controller) classifyNodes(allNodes []*v1.Node) (added, deleted, newZoneRepresentatives []*v1.Node) {
 	for i := range allNodes {
 		if _, has := nc.knownNodeSet[allNodes[i].Name]; !has {
@@ -1221,6 +1276,7 @@ func (nc *Controller) ReducedQPSFunc(nodeNum int) float32 {
 }
 
 // addPodEvictorForNewZone checks if new zone appeared, and if so add new evictor.
+// addPodEvictorForNewZone 检查是否出现了新区域，如果是，则添加新的驱逐器。
 func (nc *Controller) addPodEvictorForNewZone(logger klog.Logger, node *v1.Node) {
 	nc.evictorLock.Lock()
 	defer nc.evictorLock.Unlock()
@@ -1298,6 +1354,11 @@ func (nc *Controller) ComputeZoneState(nodeReadyConditions []*v1.NodeCondition) 
 }
 
 // reconcileNodeLabels reconciles node labels.
+// 这段代码的功能是同步节点标签，确保某些次级标签与主标签保持一致。具体步骤如下：
+// 获取节点信息，如果节点不存在则忽略。
+// 检查节点是否有标签，如果没有则直接返回。
+// 遍历标签同步规则，检查并更新次级标签以匹配主标签。
+// 如果有需要更新的标签，则调用API更新节点标签。
 func (nc *Controller) reconcileNodeLabels(ctx context.Context, nodeName string) error {
 	node, err := nc.nodeLister.Get(nodeName)
 	if err != nil {

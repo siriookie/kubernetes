@@ -34,6 +34,7 @@ import (
 )
 
 // podToEndpoint returns an Endpoint object generated from a Pod, a Node, and a Service for a particular addressType.
+// podToEndpoint返回一个由Pod、Node和Service为特定addressType生成的Endpoint对象。
 func podToEndpoint(pod *v1.Pod, node *v1.Node, service *v1.Service, addressType discovery.AddressType) discovery.Endpoint {
 	serving := endpointutil.IsPodReady(pod)
 	terminating := pod.DeletionTimestamp != nil
@@ -73,6 +74,7 @@ func podToEndpoint(pod *v1.Pod, node *v1.Node, service *v1.Service, addressType 
 
 // getEndpointPorts returns a list of EndpointPorts generated from a Service
 // and Pod.
+// 为 service 的 每 个  port 创 建 一 个 EndpointPort 对 象
 func getEndpointPorts(logger klog.Logger, service *v1.Service, pod *v1.Pod) []discovery.EndpointPort {
 	endpointPorts := []discovery.EndpointPort{}
 
@@ -86,6 +88,7 @@ func getEndpointPorts(logger klog.Logger, service *v1.Service, pod *v1.Pod) []di
 
 		portName := servicePort.Name
 		portProto := servicePort.Protocol
+		// 找到对应的 pod 里的 port
 		portNum, err := findPort(pod, servicePort)
 		if err != nil {
 			logger.V(4).Info("Failed to find port for service", "service", klog.KObj(service), "err", err)
@@ -199,6 +202,7 @@ func addTriggerTimeAnnotation(endpointSlice *discovery.EndpointSlice, triggerTim
 
 // ServiceControllerKey returns a controller key for a Service but derived from
 // an EndpointSlice.
+// 直接通过EndpointSlice 的 yaml 中的字段来获取 service 的 name 和 namespace
 func ServiceControllerKey(endpointSlice *discovery.EndpointSlice) (string, error) {
 	if endpointSlice == nil {
 		return "", fmt.Errorf("nil EndpointSlice passed to ServiceControllerKey()")
@@ -213,6 +217,8 @@ func ServiceControllerKey(endpointSlice *discovery.EndpointSlice) (string, error
 // setEndpointSliceLabels returns a map with the new endpoint slices labels and true if there was an update.
 // Slices labels must be equivalent to the Service labels except for the reserved IsHeadlessService, LabelServiceName and LabelManagedBy labels
 // Changes to IsHeadlessService, LabelServiceName and LabelManagedBy labels on the Service do not result in updates to EndpointSlice labels.
+// setEndpointSliceLabels 用来设置 EndpointSlice 对象的标签， 并判断是否需要更新。
+// 它的作用是确保 EndpointSlice 的标签与对应的 Service 对象的标签一致，同时处理一些保留标签（Reserved Labels）。
 func setEndpointSliceLabels(logger klog.Logger, epSlice *discovery.EndpointSlice, service *v1.Service, controllerName string) (map[string]string, bool) {
 	updated := false
 	epLabels := make(map[string]string)
@@ -274,9 +280,23 @@ func (sl endpointSliceEndpointLen) Len() int      { return len(sl) }
 func (sl endpointSliceEndpointLen) Swap(i, j int) { sl[i], sl[j] = sl[j], sl[i] }
 func (sl endpointSliceEndpointLen) Less(i, j int) bool {
 	return len(sl[i].Endpoints) > len(sl[j].Endpoints)
-}
+} //按Endpoints的长度来排序，长度大的排前面
 
 // returns a map of address types used by a service
+// 详细逻辑：
+// 服务支持的地址类型：
+//
+// 函数首先会创建一个 sets.Set[discovery.AddressType]，用于存储支持的地址类型。
+// 然后，函数通过查看 service.Spec.IPFamilies 来确定该服务支持的地址类型，如果是 IPv4，它会插入 AddressTypeIPv4，如果是 IPv6，则插入 AddressTypeIPv6。
+// 回退机制：
+//
+// 如果 IPFamilies 为空或服务的 ClusterIP 设置没有明确指定，函数会根据服务的 ClusterIP 自动决定使用的地址类型（IPv4 或 IPv6）。这里主要是针对集群在升级时可能出现的老旧 API Server 无法识别 IPFamilies 的情况。
+// 特别处理无选择器的 headless 服务：
+//
+// 如果服务是一个没有选择器的 headless 服务，函数会假定它使用双栈（IPv4 和 IPv6），并将这两个地址类型都插入到集合中。
+// 输出日志：
+//
+// 在某些情况下（如 IPFamilies 信息缺失时），它会记录日志说明该服务可能处于升级中，且无法识别 IP 类型。
 func getAddressTypesForService(logger klog.Logger, service *v1.Service) sets.Set[discovery.AddressType] {
 	serviceSupportedAddresses := sets.New[discovery.AddressType]()
 	// TODO: (khenidak) when address types are removed in favor of
@@ -380,6 +400,8 @@ func isServiceIPSet(service *v1.Service) bool {
 // string up in all named ports in all containers in the target pod.  If no
 // match is found, fail.
 // copied from k8s.io/kubernetes/pkg/api/v1/pod
+// 如果service 填的 target port 是字符串 like “api port”，
+// 就要进来找到 api port 是哪个 port
 func findPort(pod *v1.Pod, svcPort *v1.ServicePort) (int, error) {
 	portName := svcPort.TargetPort
 	switch portName.Type {

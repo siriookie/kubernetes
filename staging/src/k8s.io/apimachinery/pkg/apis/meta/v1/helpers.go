@@ -33,6 +33,26 @@ import (
 // LabelSelectorAsSelector converts the LabelSelector api type into a struct that implements
 // labels.Selector
 // Note: This function should be kept in sync with the selector methods in pkg/labels/selector.go
+// // LabelSelectorAsSelector 将 LabelSelector API 类型转换为实现 labels.Selector 的结构体。
+// // 注意：此函数应与 pkg/labels/selector.go 中的选择器方法保持同步。
+// apiVersion: v1
+// kind: PersistentVolumeClaim
+// metadata:
+//
+//	name: my-pvc
+//	namespace: default
+//
+// spec:
+//
+//	accessModes:
+//	  - ReadWriteOnce
+//	resources:
+//	  requests:
+//	    storage: 10Gi
+//	storageClassName: standard
+//	selector:
+//	  matchLabels:
+//	    type: fast
 func LabelSelectorAsSelector(ps *LabelSelector) (labels.Selector, error) {
 	if ps == nil {
 		return labels.Nothing(), nil

@@ -85,6 +85,11 @@ type warningWriter struct {
 type WarningWriterOptions struct {
 	// Deduplicate indicates a given warning message should only be written once.
 	// Setting this to true in a long-running process handling many warnings can result in increased memory use.
+	//该字段表示是否去重警告信息。也就是说，某个警告信息如果多次出现，只会打印一次。
+	//如果设置为 true，则相同的警告信息只会输出一次。这个选项对于长时间运行的程序非常有用，
+	//因为它可以防止同一个警告信息多次输出，从而避免日志的重复冗余。
+	//注意：开启去重（Deduplicate: true）可能会导致内存使用量增加，
+	//特别是在处理大量警告的情况下，因为程序需要跟踪已经打印过的警告。
 	Deduplicate bool
 	// Color indicates that warning output can include ANSI color codes
 	Color bool

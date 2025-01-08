@@ -70,9 +70,20 @@ type KubeCloudSharedConfiguration struct {
 	// clusterName is the instance prefix for the cluster.
 	ClusterName string
 	// clusterCIDR is CIDR Range for Pods in cluster.
+	//ClusterCIDR 是 Kubernetes 中一个重要的配置项，用于定义集群内 Pods 的 IP 地址范围。它的主要功能和意义如下：
+	//
+	//主要功能
+	//Pod IP 地址范围: ClusterCIDR 指定了在 Kubernetes 集群中可以为 Pods 分配的 IP 地址范围。所有在集群中运行的 Pods 都会从这个范围内获取 IP 地址。
+	//网络通信: Pods 之间的通信通常依赖于 IP 地址，因此定义 ClusterCIDR 是确保 Pods 能够相互访问的基础。
+	//网络插件支持: 不同的网络插件（如 Calico、Flannel、Weave 等）可能会根据 ClusterCIDR 进行配置，以确保正确的网络连接和路由。
 	ClusterCIDR string
 	// AllocateNodeCIDRs enables CIDRs for Pods to be allocated and, if
 	// ConfigureCloudRoutes is true, to be set on the cloud provider.
+	// AllocateNodeCIDRs 是 Kubernetes 中的一个配置选项，用于控制是否为每个节点分配 CIDR（Classless Inter-Domain Routing）块，以供 Pod 使用。它的主要功能和作用如下：
+	//
+	//主要功能
+	//节点 CIDR 分配: 如果设置为 true，Kubernetes 将为每个节点分配一个专用的 CIDR 块，这个块中的 IP 地址将用于该节点上运行的 Pod。
+	//与云提供商集成: 如果 ConfigureCloudRoutes 也设置为 true，那么 Kubernetes 还会在云提供商上配置相应的路由，以确保流量正确路由到 Pod。
 	AllocateNodeCIDRs bool
 	// CIDRAllocatorType determines what kind of pod CIDR allocator will be used.
 	CIDRAllocatorType string

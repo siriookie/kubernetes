@@ -85,6 +85,7 @@ func (m *pvcProcessingStore) addOrUpdate(namespace string, pvcKey, pvcName strin
 }
 
 // Returns a list of pvcs and the associated namespace to be processed downstream
+// 返回要在下游处理的pvcs和关联命名空间的列表
 func (m *pvcProcessingStore) flushNextPVCsByNamespace() ([]pvcData, string) {
 
 	nextNamespace, quit := m.namespaceQueue.Get()
@@ -269,6 +270,9 @@ func (c *Controller) processPVC(ctx context.Context, pvcNamespace, pvcName strin
 	return nil
 }
 
+// 当 PVC 被删除时，Kubernetes 会首先查看该 PVC 的 finalizers 字段。
+// 如果存在 PVCProtectionFinalizer，那么 PVC 不会立即删除，而是会进入等待状态。此时，相关控制器会执行必要的清理操作。
+// 清理完成后，控制器会删除 finalizer，最终 PVC 会被删除。
 func (c *Controller) addFinalizer(ctx context.Context, pvc *v1.PersistentVolumeClaim) error {
 	claimClone := pvc.DeepCopy()
 	claimClone.ObjectMeta.Finalizers = append(claimClone.ObjectMeta.Finalizers, volumeutil.PVCProtectionFinalizer)
@@ -446,6 +450,9 @@ func (c *Controller) podAddedDeletedUpdated(logger klog.Logger, old, new interfa
 		// that's the case X needs to be processed as well to handle the case
 		// where it is blocking deletion of a PVC not referenced by Y, otherwise
 		// such PVC will never be deleted.
+		// 更新通知可能会掩盖 Pod X 的删除以及随后创建一个与 X 具有相同命名空间名称的 Pod Y。
+		//如果是这种情况，X 也需要被处理，以处理它可能阻止删除一个没有被 Y 引用的 PVC 的情况，
+		//否则该 PVC 将永远无法被删除
 		if oldPod := c.parsePod(old); oldPod != nil && oldPod.UID != pod.UID {
 			c.enqueuePVCs(logger, oldPod, true)
 		}
@@ -474,6 +481,7 @@ func (*Controller) parsePod(obj interface{}) *v1.Pod {
 
 func (c *Controller) enqueuePVCs(logger klog.Logger, pod *v1.Pod, deleted bool) {
 	// Filter out pods that can't help us to remove a finalizer on PVC
+	// 只处理在删除状态的pod或者删除了的pod
 	if !deleted && !volumeutil.IsPodTerminated(pod, pod.Status) && pod.Spec.NodeName != "" {
 		return
 	}

@@ -41,6 +41,9 @@ import (
 
 // rollingUpdate identifies the set of old pods to delete, or additional pods to create on nodes,
 // remaining within the constraints imposed by the update strategy.
+// rollingUpdate 识别需要删除的一组旧 Pod，或者需要在节点上创建的额外 Pod，
+// 并确保操作保持在更新策略所施加的约束范围内。
+
 func (dsc *DaemonSetsController) rollingUpdate(ctx context.Context, ds *apps.DaemonSet, nodeList []*v1.Node, hash string) error {
 	logger := klog.FromContext(ctx)
 	nodeToDaemonPods, err := dsc.getNodesToDaemonPods(ctx, ds, false)
@@ -66,6 +69,9 @@ func (dsc *DaemonSetsController) rollingUpdate(ctx context.Context, ds *apps.Dae
 	// * The number of new pods that are unavailable must be less than maxUnavailable
 	// * A node with an available old pod is a candidate for deletion if it does not violate other invariants
 	//
+	//不使用Surge（maxSurge为0）：
+	//删除旧Pod以确保不超过最大不可用数量（maxUnavailable），
+	//并让核心循环创建新的Pod。
 	if maxSurge == 0 {
 		var numUnavailable int
 		var allowedReplacementPods []string
@@ -147,7 +153,8 @@ func (dsc *DaemonSetsController) rollingUpdate(ctx context.Context, ds *apps.Dae
 	var allowedNewNodes []string
 	var numSurge int
 	var numAvailable int
-
+	// 使用Surge（maxSurge大于0）：
+	//创建新Pod并在满足条件时删除旧Pod，确保不会超过最大Surge数量（maxSurge），同时保持尽可能高的可用性。
 	for nodeName, pods := range nodeToDaemonPods {
 		newPod, oldPod, ok := findUpdatedPodsOnNode(ds, pods, hash)
 		if !ok {
@@ -401,11 +408,13 @@ func maxRevision(histories []*apps.ControllerRevision) int64 {
 }
 
 func (dsc *DaemonSetsController) dedupCurHistories(ctx context.Context, ds *apps.DaemonSet, curHistories []*apps.ControllerRevision) (*apps.ControllerRevision, error) {
+	//  判断当前历史记录数量是否为1，如果是则直接返回该历史记录。
 	if len(curHistories) == 1 {
 		return curHistories[0], nil
 	}
 	var maxRevision int64
 	var keepCur *apps.ControllerRevision
+	// 遍历历史记录，更新最大修订版本和保留的历史记录。
 	for _, cur := range curHistories {
 		if cur.Revision >= maxRevision {
 			keepCur = cur
@@ -413,6 +422,7 @@ func (dsc *DaemonSetsController) dedupCurHistories(ctx context.Context, ds *apps
 		}
 	}
 	// Relabel pods before dedup
+	// I：获取所有由DaemonSet管理的Pod。
 	pods, err := dsc.getDaemonPods(ctx, ds)
 	if err != nil {
 		return nil, err
@@ -538,25 +548,31 @@ func (dsc *DaemonSetsController) snapshot(ctx context.Context, ds *apps.DaemonSe
 		Revision: revision,
 	}
 
+	//返回快照：如果创建成功，返回新创建的快照。
 	history, err = dsc.kubeClient.AppsV1().ControllerRevisions(ds.Namespace).Create(ctx, history, metav1.CreateOptions{})
 	if outerErr := err; errors.IsAlreadyExists(outerErr) {
+		// 如果快照已存在
 		logger := klog.FromContext(ctx)
 		// TODO: Is it okay to get from historyLister?
+		//  获取现有快照：如果快照已存在，尝试获取现有快照。
 		existedHistory, getErr := dsc.kubeClient.AppsV1().ControllerRevisions(ds.Namespace).Get(ctx, name, metav1.GetOptions{})
 		if getErr != nil {
 			return nil, getErr
 		}
 		// Check if we already created it
+		//检查是否匹配：检查现有快照是否与当前DaemonSet匹配。
 		done, matchErr := Match(ds, existedHistory)
 		if matchErr != nil {
 			return nil, matchErr
 		}
+		//返回现有快照：如果匹配，返回现有快照。
 		if done {
 			return existedHistory, nil
 		}
 
 		// Handle name collisions between different history
 		// Get the latest DaemonSet from the API server to make sure collision count is only increased when necessary
+		// 获取最新DaemonSet：如果不匹配，获取最新的DaemonSet。
 		currDS, getErr := dsc.kubeClient.AppsV1().DaemonSets(ds.Namespace).Get(ctx, ds.Name, metav1.GetOptions{})
 		if getErr != nil {
 			return nil, getErr
@@ -569,6 +585,7 @@ func (dsc *DaemonSetsController) snapshot(ctx context.Context, ds *apps.DaemonSe
 			currDS.Status.CollisionCount = new(int32)
 		}
 		*currDS.Status.CollisionCount++
+		// 更新DaemonSet状态：更新DaemonSet的状态。
 		_, updateErr := dsc.kubeClient.AppsV1().DaemonSets(ds.Namespace).UpdateStatus(ctx, currDS, metav1.UpdateOptions{})
 		if updateErr != nil {
 			return nil, updateErr

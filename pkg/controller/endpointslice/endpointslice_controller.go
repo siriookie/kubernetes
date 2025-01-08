@@ -119,6 +119,8 @@ func NewController(ctx context.Context, podInformer coreinformers.PodInformer,
 		workerLoopPeriod: time.Second,
 	}
 
+	// 监 听 service 的 add、update、delete， 把 service
+	// 传 进 serviceQueue
 	serviceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: c.onServiceUpdate,
 		UpdateFunc: func(old, cur interface{}) {
@@ -128,7 +130,9 @@ func NewController(ctx context.Context, podInformer coreinformers.PodInformer,
 	})
 	c.serviceLister = serviceInformer.Lister()
 	c.servicesSynced = serviceInformer.Informer().HasSynced
-
+	// 监 听 pod 的 add、update、delete， 把 pod 的 service
+	// 传 进 serviceQueue， 注意 pod 是 update 的时候先
+	// 比较 pod 是否有变化 再把有变化的 service 传进去
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.addPod,
 		UpdateFunc: c.updatePod,
@@ -162,6 +166,11 @@ func NewController(ctx context.Context, podInformer coreinformers.PodInformer,
 
 	c.endpointUpdatesBatchPeriod = endpointUpdatesBatchPeriod
 
+	//检查 Kubernetes 集群中是否启用了 TopologyAwareHints 功能。
+	//TopologyAwareHints 是一个特性开关，用于控制拓扑感知功能的启用与禁用。
+	//这个功能可能用于节点感知和调度优化等场景。
+	// 如 果 开 启 了 TopologyAwareHints ，就 分 情 况 把 监 听 到 发 生 事 件 的  node 加 入
+	// topologyQueue
 	if utilfeature.DefaultFeatureGate.Enabled(features.TopologyAwareHints) {
 		nodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(_ interface{}) {
@@ -266,6 +275,7 @@ type Controller struct {
 }
 
 // Run will not return until stopCh is closed.
+// 执行函数
 func (c *Controller) Run(ctx context.Context, workers int) {
 	defer utilruntime.HandleCrash()
 
@@ -286,10 +296,12 @@ func (c *Controller) Run(ctx context.Context, workers int) {
 	}
 
 	logger.V(2).Info("Starting service queue worker threads", "total", workers)
+	// 监 听 serviceQueue 的 信 息
 	for i := 0; i < workers; i++ {
 		go wait.Until(func() { c.serviceQueueWorker(logger) }, c.workerLoopPeriod, ctx.Done())
 	}
 	logger.V(2).Info("Starting topology queue worker threads", "total", 1)
+	//监 听 topologyQueue 的 信 息
 	go wait.Until(func() { c.topologyQueueWorker(logger) }, c.workerLoopPeriod, ctx.Done())
 
 	<-ctx.Done()
@@ -328,6 +340,8 @@ func (c *Controller) processNextTopologyWorkItem(logger klog.Logger) bool {
 		return false
 	}
 	defer c.topologyQueue.Done(key)
+	// 1. 计 算 各 个 node 的 用 于 拓 扑 的 信 息
+	// 2. 计 算 是 否 有 应 该 调 整 到 别 的 区 域 的  service， 入 队
 	c.checkNodeTopologyDistribution(logger)
 	return true
 }
@@ -367,20 +381,22 @@ func (c *Controller) syncService(logger klog.Logger, key string) error {
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
-
+		// 如 果 service 已 经 被 删 除 了 ，那 么 从 内 存 中 移 除 记 录 。
+		// 不 用 去 再 删 除 endpointSlice 啥 的，因 为 service 的
+		// 删 除 过 程 中 已 经 删 除 掉 了 对 应 的 endpointSlice
 		c.triggerTimeTracker.DeleteService(namespace, name)
 		c.reconciler.DeleteService(namespace, name)
 		c.endpointSliceTracker.DeleteService(namespace, name)
 		// The service has been deleted, return nil so that it won't be retried.
 		return nil
 	}
-
+	// 如 果 是 ServiceTypeExternalName 不 用 处 理 endpointSlice
 	if service.Spec.Type == v1.ServiceTypeExternalName {
 		// services with Type ExternalName receive no endpoints from this controller;
 		// Ref: https://issues.k8s.io/105986
 		return nil
 	}
-
+	// 如 果 是 没 有  Selector 的 ， 也 不 用 处 理
 	if service.Spec.Selector == nil {
 		// services without a selector receive no endpoint slices from this controller;
 		// these services will receive endpoint slices that are created out-of-band via the REST API.
@@ -390,6 +406,7 @@ func (c *Controller) syncService(logger klog.Logger, key string) error {
 	logger.V(5).Info("About to update endpoint slices for service", "key", key)
 
 	podLabelSelector := labels.Set(service.Spec.Selector).AsSelectorPreValidated()
+	// 查 出 所 有 的 pod
 	pods, err := c.podLister.Pods(service.Namespace).List(podLabelSelector)
 	if err != nil {
 		// Since we're getting stuff from a local cache, it is basically
@@ -398,7 +415,7 @@ func (c *Controller) syncService(logger klog.Logger, key string) error {
 			"Error listing Pods for Service %s/%s: %v", service.Namespace, service.Name, err)
 		return err
 	}
-
+	// 根 据 service.Name 和 ControllerName 来 找 出 endpointSlice
 	esLabelSelector := labels.Set(map[string]string{
 		discovery.LabelServiceName: service.Name,
 		discovery.LabelManagedBy:   c.reconciler.GetControllerName(),
@@ -414,8 +431,9 @@ func (c *Controller) syncService(logger klog.Logger, key string) error {
 	}
 
 	// Drop EndpointSlices that have been marked for deletion to prevent the controller from getting stuck.
+	// 去 除 掉 在 删 除 状 态 的 endpointSlice
 	endpointSlices = dropEndpointSlicesPendingDeletion(endpointSlices)
-
+	// 判 断 endpointSlices 是 否 是 过 时 的
 	if c.endpointSliceTracker.StaleSlices(service, endpointSlices) {
 		return endpointslicepkg.NewStaleInformerCache("EndpointSlice informer cache is out of date")
 	}
@@ -461,6 +479,8 @@ func (c *Controller) onServiceDelete(obj interface{}) {
 // onEndpointSliceAdd queues a sync for the relevant Service for a sync if the
 // EndpointSlice resource version does not match the expected version in the
 // endpointSliceTracker.
+// 判断该 endpointSlice是否是受endpointSliceController 所管理的，并且确保不是过时的
+// 然后把对应的 service 加入 queue
 func (c *Controller) onEndpointSliceAdd(obj interface{}) {
 	endpointSlice := obj.(*discovery.EndpointSlice)
 	if endpointSlice == nil {
@@ -488,12 +508,15 @@ func (c *Controller) onEndpointSliceUpdate(logger klog.Logger, prevObj, obj inte
 	// ensures that we handle changes to this label.
 	svcName := endpointSlice.Labels[discovery.LabelServiceName]
 	prevSvcName := prevEndpointSlice.Labels[discovery.LabelServiceName]
+	// 如果endpointSlice变化以后连 service 都变了
 	if svcName != prevSvcName {
 		logger.Info("label changed", "label", discovery.LabelServiceName, "oldService", prevSvcName, "newService", svcName, "endpointslice", klog.KObj(endpointSlice))
 		c.queueServiceForEndpointSlice(endpointSlice)
 		c.queueServiceForEndpointSlice(prevEndpointSlice)
 		return
 	}
+	// service 没有变，判断是否是该endpointSlice属于endpointSliceController 的情况变了
+	// 或者是别的数据变了，并且是没有过时的数据
 	if c.reconciler.ManagedByChanged(prevEndpointSlice, endpointSlice) || (c.reconciler.ManagedByController(endpointSlice) && c.endpointSliceTracker.ShouldSync(endpointSlice)) {
 		c.queueServiceForEndpointSlice(endpointSlice)
 	}
@@ -504,9 +527,13 @@ func (c *Controller) onEndpointSliceUpdate(logger klog.Logger, prevObj, obj inte
 // endpointSliceTracker.
 func (c *Controller) onEndpointSliceDelete(obj interface{}) {
 	endpointSlice := getEndpointSliceFromDeleteAction(obj)
+	// 1.判断这个 EndpointSlice 是否由当前控制器管理。
+	// 2.确认 EndpointSlice 是否在当前控制器的追踪范围内。
 	if endpointSlice != nil && c.reconciler.ManagedByController(endpointSlice) && c.endpointSliceTracker.Has(endpointSlice) {
 		// This returns false if we didn't expect the EndpointSlice to be
 		// deleted. If that is the case, we queue the Service for another sync.
+		// 如果我们不希望删除 EndpointSlice，则返回 false。
+		//如果是这种情况，我们将服务排队等待另一个同步。
 		if !c.endpointSliceTracker.HandleDeletion(endpointSlice) {
 			c.queueServiceForEndpointSlice(endpointSlice)
 		}
@@ -515,6 +542,7 @@ func (c *Controller) onEndpointSliceDelete(obj interface{}) {
 
 // queueServiceForEndpointSlice attempts to queue the corresponding Service for
 // the provided EndpointSlice.
+// 把 endpointSlice 对应的 service 加入 queue，除非endpointSlice的 yaml 里没有写 service
 func (c *Controller) queueServiceForEndpointSlice(endpointSlice *discovery.EndpointSlice) {
 	key, err := endpointslicerec.ServiceControllerKey(endpointSlice)
 	if err != nil {
@@ -524,6 +552,7 @@ func (c *Controller) queueServiceForEndpointSlice(endpointSlice *discovery.Endpo
 
 	// queue after the max of endpointSliceChangeMinSyncDelay and
 	// endpointUpdatesBatchPeriod.
+	// 延迟队列
 	delay := endpointSliceChangeMinSyncDelay
 	if c.endpointUpdatesBatchPeriod > delay {
 		delay = c.endpointUpdatesBatchPeriod
@@ -531,6 +560,7 @@ func (c *Controller) queueServiceForEndpointSlice(endpointSlice *discovery.Endpo
 	c.serviceQueue.AddAfter(key, delay)
 }
 
+// addPod 找到 pod 的 service，入队
 func (c *Controller) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
 	services, err := endpointsliceutil.GetPodServiceMemberships(c.serviceLister, pod)
@@ -563,6 +593,7 @@ func (c *Controller) addNode() {
 	c.topologyQueue.Add(topologyQueueItemKey)
 }
 
+// 函数内部的逻辑检查了节点的“就绪”状态和拓扑信息，来决定是否需要对拓扑缓存队列（topologyQueue）进行更新
 func (c *Controller) updateNode(old, cur interface{}) {
 	oldNode := old.(*v1.Node)
 	curNode := cur.(*v1.Node)
@@ -611,6 +642,7 @@ func trackSync(err error) {
 	endpointslicemetrics.EndpointSliceSyncs.WithLabelValues(metricLabel).Inc()
 }
 
+// 只留下不在删除状态的endpointSlice
 func dropEndpointSlicesPendingDeletion(endpointSlices []*discovery.EndpointSlice) []*discovery.EndpointSlice {
 	n := 0
 	for _, endpointSlice := range endpointSlices {

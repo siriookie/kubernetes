@@ -23,6 +23,11 @@ import (
 
 // IOStreams provides the standard names for iostreams.  This is useful for embedding and for unit testing.
 // Inconsistent and different names make it hard to read and review code
+// In io.Reader：表示标准输入流。io.Reader 是一个接口，定义了 Read(p []byte) (n int, err error) 方法，表示可以从输入流中读取数据。通常与 os.Stdin 对应。
+//
+// Out io.Writer：表示标准输出流。io.Writer 是一个接口，定义了 Write(p []byte) (n int, err error) 方法，表示可以将数据写入到输出流中。通常与 os.Stdout 对应。
+//
+// ErrOut io.Writer：表示标准错误输出流，功能和 Out 类似，但用于输出错误信息。通常与 os.Stderr 对应。
 type IOStreams struct {
 	// In think, os.Stdin
 	In io.Reader

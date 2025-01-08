@@ -86,6 +86,16 @@ func (pvIndex *persistentVolumeOrderedIndex) findByClaim(claim *v1.PersistentVol
 	// Searches are performed against a set of access modes, so we can attempt
 	// not only the exact matching modes but also potential matches (the GCEPD
 	// example above).
+	// PV（持久卷）根据其访问模式进行索引，以便于搜索。
+	// 每个索引是访问模式集合的字符串表示。可能的集合数量是有限的，
+	// PV 只会被索引到其中一个集合（匹配 PV 的模式的索引）。
+	//
+	// 资源请求总是会指定所需的访问模式。
+	// 任何匹配的 PV 必须至少具有请求的access modes，但可以有更多。例如，
+	// 用户请求 ReadWriteOnce，但可用的 GCEPD 是 ReadWriteOnce + ReadOnlyMany。
+	//
+	// 搜索是针对一组访问模式进行的，因此我们不仅可以尝试精确匹配模式，
+	// 还可以尝试潜在匹配（如上面的 GCEPD 示例）。
 	allPossibleModes := pvIndex.allPossibleMatchingAccessModes(claim.Spec.AccessModes)
 
 	for _, modes := range allPossibleModes {
@@ -162,6 +172,16 @@ func (pvIndex *persistentVolumeOrderedIndex) allPossibleMatchingAccessModes(requ
 	// sort by the number of modes in each array with the fewest number of
 	// modes coming first. this allows searching for volumes by the minimum
 	// number of modes required of the possible matches.
+	// 按支持的访问模式数量排序，越少越靠前
+	//	// can be mounted in read/write mode to exactly 1 host
+	//	ReadWriteOnce PersistentVolumeAccessMode = "ReadWriteOnce"
+	//	// can be mounted in read-only mode to many hosts
+	//	ReadOnlyMany PersistentVolumeAccessMode = "ReadOnlyMany"
+	//	// can be mounted in read/write mode to many hosts
+	//	ReadWriteMany PersistentVolumeAccessMode = "ReadWriteMany"
+	//	// can be mounted in read/write mode to exactly 1 pod
+	//	// cannot be used in combination with other access modes
+	//	ReadWriteOncePod PersistentVolumeAccessMode = "ReadWriteOncePod"
 	sort.Sort(byAccessModes{matchedModes})
 	return matchedModes
 }

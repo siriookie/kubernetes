@@ -417,6 +417,10 @@ type JobSpec struct {
 	// the Job won't be automatically deleted. If this field is set to zero,
 	// the Job becomes eligible to be deleted immediately after it finishes.
 	// +optional
+	// ttlSecondsAfterFinished 限制了一个已完成任务（状态为 Complete 或 Failed）的生命周期。如果设置了这个字段，任务完成后（无论是成功还是失败），在该字段指定的时间后，任务将自动变为可删除状态。
+	//如果这个字段未设置，任务将不会被自动删除。
+	//如果该字段设置为 0，任务会在完成后立即变为可删除状态。
+	//在任务被删除时，任务的生命周期保证（例如 finalizer）会被遵循和执行。
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty" protobuf:"varint,8,opt,name=ttlSecondsAfterFinished"`
 
 	// completionMode specifies how Pod completions are tracked. It can be

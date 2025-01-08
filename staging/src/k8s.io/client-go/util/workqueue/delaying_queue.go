@@ -36,6 +36,7 @@ type DelayingInterface TypedDelayingInterface[any]
 type TypedDelayingInterface[T comparable] interface {
 	TypedInterface[T]
 	// AddAfter adds an item to the workqueue after the indicated duration has passed
+	// AddAfter 往 workqueue 里 add item，但是要等 duration
 	AddAfter(item T, duration time.Duration)
 }
 

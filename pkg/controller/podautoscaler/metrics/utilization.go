@@ -23,11 +23,13 @@ import (
 // GetResourceUtilizationRatio takes in a set of metrics, a set of matching requests,
 // and a target utilization percentage, and calculates the ratio of
 // desired to actual utilization (returning that, the actual utilization, and the raw average value)
+// GetResourceUtilizationRatio 接收一组metrics、一组request和一个目标利用率百分比（targetUtilization），
+// 计算期望利用率与实际利用率的比率（同时返回该比率、实际利用率以及原始平均值）。
 func GetResourceUtilizationRatio(metrics PodMetricsInfo, requests map[string]int64, targetUtilization int32) (utilizationRatio float64, currentUtilization int32, rawAverageValue int64, err error) {
 	metricsTotal := int64(0)
 	requestsTotal := int64(0)
 	numEntries := 0
-
+	// 计算所有pod 的metrics和requests 的 resource 总和
 	for podName, metric := range metrics {
 		request, hasRequest := requests[podName]
 		if !hasRequest {
@@ -54,6 +56,9 @@ func GetResourceUtilizationRatio(metrics PodMetricsInfo, requests map[string]int
 // GetMetricUsageRatio takes in a set of metrics and a target usage value,
 // and calculates the ratio of desired to actual usage
 // (returning that and the actual usage)
+// 收集多个 Pod 的当前指标值（比如 CPU 使用量）。
+// 计算每个 Pod 的平均使用量。
+// 与目标使用量比较，得出比率。
 func GetMetricUsageRatio(metrics PodMetricsInfo, targetUsage int64) (usageRatio float64, currentUsage int64) {
 	metricsTotal := int64(0)
 	for _, metric := range metrics {

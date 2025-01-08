@@ -203,6 +203,18 @@ type VolumeSource struct {
 	// A pod can use both types of ephemeral volumes and
 	// persistent volumes at the same time.
 	//
+	//ephemeral 表示由集群存储驱动管理的卷。该卷的生命周期与定义它的 Pod 紧密相关——它将在 Pod 启动之前创建，在 Pod 被删除时删除。
+	//
+	//使用场景：
+	//a) 该卷仅在 Pod 运行期间需要；
+	//b) 需要普通卷的某些特性，如从快照恢复或容量跟踪；
+	//c) 存储驱动程序通过存储类指定；
+	//d) 存储驱动程序支持通过 PersistentVolumeClaim (PVC) 动态卷供给（有关此卷类型与 PersistentVolumeClaim 之间连接的更多信息，请参见 EphemeralVolumeSource）。
+	//如果需要长于单个 Pod 生命周期的持久化存储，则应使用 PersistentVolumeClaim 或其他供应商特定的 API。
+	//
+	//如果要使用轻量级的本地临时卷，并且 CSI 驱动程序支持这种使用方式，请使用 CSI——有关驱动程序的更多信息，请参阅驱动程序的文档。
+	//
+	//一个 Pod 可以同时使用临时卷和持久卷。
 	// +optional
 	Ephemeral *EphemeralVolumeSource `json:"ephemeral,omitempty" protobuf:"bytes,29,opt,name=ephemeral"`
 	// image represents an OCI object (a container image or artifact) pulled and mounted on the kubelet's host machine.
@@ -6029,6 +6041,7 @@ type NodeSpec struct {
 	// Unschedulable controls node schedulability of new pods. By default, node is schedulable.
 	// More info: https://kubernetes.io/docs/concepts/nodes/node/#manual-node-administration
 	// +optional
+	// 如果你将 Unschedulable 设置为 true，则新的 Pods 将不会被调度到该节点上
 	Unschedulable bool `json:"unschedulable,omitempty" protobuf:"varint,4,opt,name=unschedulable"`
 	// If specified, the node's taints.
 	// +optional

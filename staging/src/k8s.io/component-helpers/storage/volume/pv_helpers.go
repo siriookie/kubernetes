@@ -93,6 +93,9 @@ func IsDelayBindingProvisioning(claim *v1.PersistentVolumeClaim) bool {
 }
 
 // IsDelayBindingMode checks if claim is in delay binding mode.
+// PVC（Persistent Volume Claim）的延迟绑定模式（Delay Binding Mode）是一种特性，
+// 允许用户在创建 PVC 时不立即绑定到特定的 PV（Persistent Volume）。
+// 而是可以在 PVC 满足特定条件时再进行绑定。
 func IsDelayBindingMode(claim *v1.PersistentVolumeClaim, classLister storagelisters.StorageClassLister) (bool, error) {
 	className := GetPersistentVolumeClaimClass(claim)
 	if className == "" {
@@ -156,6 +159,8 @@ func GetBindVolumeToClaim(volume *v1.PersistentVolume, claim *v1.PersistentVolum
 // IsVolumeBoundToClaim returns true, if given volume is pre-bound or bound
 // to specific claim. Both claim.Name and claim.Namespace must be equal.
 // If claim.UID is present in volume.Spec.ClaimRef, it must be equal too.
+// 函数 IsVolumeBoundToClaim 的目的是检查给定的 PersistentVolume（PV）是否已经绑定或预绑定到指定的 PersistentVolumeClaim（PVC）。
+// 函数主要用于判断 PV 和 PVC 之间的绑定关系是否匹配，以确保存储卷调度和使用的正确性。
 func IsVolumeBoundToClaim(volume *v1.PersistentVolume, claim *v1.PersistentVolumeClaim) bool {
 	if volume.Spec.ClaimRef == nil {
 		return false
@@ -183,6 +188,17 @@ func IsVolumeBoundToClaim(volume *v1.PersistentVolume, claim *v1.PersistentVolum
 // excludedVolumes is only used in the scheduler path, and is needed for evaluating multiple
 // unbound PVCs for a single Pod at one time.  As each PVC finds a matching PV, the chosen
 // PV needs to be excluded from future matching.
+// FindMatchingVolume 函数遍历卷的列表，以找到与声明最匹配的卷。
+//
+// 该函数同时用于 PV 控制器和调度器。
+//
+// 当 delayBinding 为 true 时，仅在 PV 控制器路径中设置。在这种情况下，
+// 预绑定的 PV 仍然会作为匹配返回，但未绑定的 PV 会被跳过。
+//
+// node 仅在调度器路径中设置。当设置时，将检查 PV 的节点亲和性与节点标签的匹配。
+//
+// excludedVolumes 仅在调度器路径中使用，用于同时评估单个 Pod 的多个未绑定 PVC。
+// 当每个 PVC 找到一个匹配的 PV 时，所选择的 PV 需要从未来的匹配中排除。
 func FindMatchingVolume(
 	claim *v1.PersistentVolumeClaim,
 	volumes []*v1.PersistentVolume,
@@ -205,6 +221,7 @@ func FindMatchingVolume(
 
 	var selector labels.Selector
 	if claim.Spec.Selector != nil {
+		// 拿到 selector
 		internalSelector, err := metav1.LabelSelectorAsSelector(claim.Spec.Selector)
 		if err != nil {
 			return nil, fmt.Errorf("error creating internal label selector for claim: %v: %v", claimToClaimKey(claim), err)
@@ -218,17 +235,23 @@ func FindMatchingVolume(
 	//   all volumes.
 	// - find the smallest matching one if there is no volume pre-bound to
 	//   the claim.
+	// 遍历所有可用卷，目标有两个：
+	// - 找到一个要么是用户预绑定的卷，要么是为该声明动态创建的卷。为此，我们需要遍历所有卷。
+	// - 如果没有卷预绑定到该声明，则找到最小的匹配卷。
 	for _, volume := range volumes {
 		if _, ok := excludedVolumes[volume.Name]; ok {
 			// Skip volumes in the excluded list
+			// 跳过排除列表中的卷
 			continue
 		}
 		if volume.Spec.ClaimRef != nil && !IsVolumeBoundToClaim(volume, claim) {
+			// 跳过已经绑定了并且绑定的不是这个 pvc 的
 			continue
 		}
 
 		volumeQty := volume.Spec.Capacity[v1.ResourceStorage]
 		if volumeQty.Cmp(requestedQty) < 0 {
+			// 如果requestedQty 大于 volumeQty，跳过
 			continue
 		}
 		// filter out mismatching volumeModes
@@ -249,6 +272,7 @@ func FindMatchingVolume(
 		}
 
 		// check if PV's DeletionTimeStamp is set, if so, skip this volume.
+		// 跳过设置了删除时间戳的PV
 		if volume.ObjectMeta.DeletionTimestamp != nil {
 			continue
 		}
@@ -259,6 +283,9 @@ func FindMatchingVolume(
 			// is satisfied by the node
 			// CheckNodeAffinity is the most expensive call in this loop.
 			// We should check cheaper conditions first or consider optimizing this function.
+			// 调度器路径，检查 PV 的 NodeAffinity 是否被节点满足。
+			// CheckNodeAffinity 是这个循环中开销最大的调用。
+			// 我们应该先检查更便宜的条件，或者考虑优化这个函数。
 			err := CheckNodeAffinity(volume, node.Labels)
 			if err != nil {
 				nodeAffinityValid = false
@@ -272,10 +299,11 @@ func FindMatchingVolume(
 			if !nodeAffinityValid {
 				return nil, nil
 			}
-
+			// 返回绑定的pv
 			return volume, nil
 		}
 
+		// 没绑定上
 		if node == nil && delayBinding {
 			// PV controller does not bind this claim.
 			// Scheduler will handle binding unbound volumes
@@ -331,6 +359,8 @@ func FindMatchingVolume(
 func CheckVolumeModeMismatches(pvcSpec *v1.PersistentVolumeClaimSpec, pvSpec *v1.PersistentVolumeSpec) bool {
 	// In HA upgrades, we cannot guarantee that the apiserver is on a version >= controller-manager.
 	// So we default a nil volumeMode to filesystem
+	// 在高可用（HA）升级中，我们无法保证 apiserver 的版本大于或等于 controller-manager。
+	// 因此，我们将 nil 的 volumeMode 默认为 filesystem。
 	requestedVolumeMode := v1.PersistentVolumeFilesystem
 	if pvcSpec.VolumeMode != nil {
 		requestedVolumeMode = *pvcSpec.VolumeMode

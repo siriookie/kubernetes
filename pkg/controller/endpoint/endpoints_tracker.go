@@ -46,14 +46,14 @@ func (t *staleEndpointsTracker) Stale(endpoints *v1.Endpoints) {
 }
 
 func (t *staleEndpointsTracker) IsStale(endpoints *v1.Endpoints) bool {
-	t.lock.RLock()
-	defer t.lock.RUnlock()
-	nn := types.NamespacedName{Name: endpoints.Name, Namespace: endpoints.Namespace}
-	staleResourceVersion, exists := t.staleResourceVersionByEndpoints[nn]
-	if exists && staleResourceVersion == endpoints.ResourceVersion {
-		return true
+	t.lock.RLock()                                                                   // 获取读锁
+	defer t.lock.RUnlock()                                                           // 确保在函数结束时释放读锁
+	nn := types.NamespacedName{Name: endpoints.Name, Namespace: endpoints.Namespace} // 创建 NamespacedName
+	staleResourceVersion, exists := t.staleResourceVersionByEndpoints[nn]            // 查找过时的资源版本
+	if exists && staleResourceVersion == endpoints.ResourceVersion {                 // 检查是否存在且版本匹配
+		return true // 如果是过时的，返回 true
 	}
-	return false
+	return false // 否则返回 false
 }
 
 func (t *staleEndpointsTracker) Delete(namespace, name string) {

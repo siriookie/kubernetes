@@ -81,6 +81,8 @@ type HorizontalPodAutoscalerSpec struct {
 	// in both Up and Down directions (scaleUp and scaleDown fields respectively).
 	// If not set, the default HPAScalingRules for scale up and scale down are used.
 	// +optional
+	// behavior 字段是用来定义 扩缩容行为策略 的，它可以控制扩容和缩容时的速度、步长等动态调整参数。
+	//这一功能是在 Kubernetes 1.18 中引入的，主要用于解决由于负载波动导致的频繁扩缩容问题（即“抖动”问题）
 	Behavior *HorizontalPodAutoscalerBehavior `json:"behavior,omitempty" protobuf:"bytes,5,opt,name=behavior"`
 }
 
@@ -230,10 +232,54 @@ type MetricSourceType string
 const (
 	// ObjectMetricSourceType is a metric describing a kubernetes object
 	// (for example, hits-per-second on an Ingress object).
+	// apiVersion: autoscaling/v2
+	//kind: HorizontalPodAutoscaler
+	//metadata:
+	//  name: my-app-hpa
+	//  namespace: default
+	//spec:
+	//  scaleTargetRef:
+	//    apiVersion: apps/v1
+	//    kind: Deployment
+	//    name: my-app
+	//  minReplicas: 2
+	//  maxReplicas: 10
+	//  metrics:
+	//    - type: Object
+	//      object:
+	//        metric:
+	//          name: requests_per_second
+	//        describedObject:
+	//          apiVersion: networking.k8s.io/v1
+	//          kind: Ingress
+	//          name: my-ingress
+	//        target:
+	//          type: Value
+	//          value: "100"
 	ObjectMetricSourceType MetricSourceType = "Object"
 	// PodsMetricSourceType is a metric describing each pod in the current scale
 	// target (for example, transactions-processed-per-second).  The values
 	// will be averaged together before being compared to the target value.
+	// apiVersion: autoscaling/v2
+	//kind: HorizontalPodAutoscaler
+	//metadata:
+	//  name: example-hpa
+	//  namespace: default
+	//spec:
+	//  scaleTargetRef:
+	//    apiVersion: apps/v1
+	//    kind: Deployment
+	//    name: example-deployment
+	//  minReplicas: 2
+	//  maxReplicas: 10
+	//  metrics:
+	//    - type: Pods
+	//      pods:
+	//        metric:
+	//          name: request_rate
+	//        target:
+	//          type: AverageValue
+	//          averageValue: "500m"
 	PodsMetricSourceType MetricSourceType = "Pods"
 	// ResourceMetricSourceType is a resource metric known to Kubernetes, as
 	// specified in requests and limits, describing each pod in the current
@@ -246,12 +292,55 @@ const (
 	// scale target (e.g. CPU or memory).  Such metrics are built in to
 	// Kubernetes, and have special scaling options on top of those available
 	// to normal per-pod metrics (the "pods" source).
+	//apiVersion: autoscaling/v2
+	//kind: HorizontalPodAutoscaler
+	//metadata:
+	//  name: example-hpa
+	//  namespace: default
+	//spec:
+	//  scaleTargetRef:
+	//    apiVersion: apps/v1
+	//    kind: Deployment
+	//    name: example-deployment
+	//  minReplicas: 2
+	//  maxReplicas: 10
+	//  metrics:
+	//    - type: ContainerResource
+	//      containerResource:
+	//        name: cpu
+	//        container: app-container
+	//        target:
+	//          type: Utilization
+	//          averageUtilization: 70
 	ContainerResourceMetricSourceType MetricSourceType = "ContainerResource"
 	// ExternalMetricSourceType is a global metric that is not associated
 	// with any Kubernetes object. It allows autoscaling based on information
 	// coming from components running outside of cluster
 	// (for example length of queue in cloud messaging service, or
 	// QPS from loadbalancer running outside of cluster).
+	// apiVersion: autoscaling/v2
+	//kind: HorizontalPodAutoscaler
+	//metadata:
+	//  name: example-hpa
+	//  namespace: default
+	//spec:
+	//  scaleTargetRef:
+	//    apiVersion: apps/v1
+	//    kind: Deployment
+	//    name: example-deployment
+	//  minReplicas: 2
+	//  maxReplicas: 10
+	//  metrics:
+	//    - type: External
+	//      external:
+	//        metric:
+	//          name: custom-metric-queue-length
+	//          selector:
+	//            matchLabels:
+	//              queueName: my-queue
+	//        target:
+	//          type: AverageValue
+	//          averageValue: 30
 	ExternalMetricSourceType MetricSourceType = "External"
 )
 
@@ -348,6 +437,14 @@ type MetricTarget struct {
 	// averageValue is the target value of the average of the
 	// metric across all relevant pods (as a quantity)
 	// +optional
+	//含义:
+	//表示目标的资源使用总和的平均值，通常以原始的资源单位值（如内存的 MiB、CPU 的 millicores 等）来表示。
+	//
+	//场景:
+	//使用时，该值是与 Pod 资源的实际总消耗相比较的。
+	//
+	//适用的指标:
+	//常用于 外部自定义指标 或 资源总量指标（Object 或 Pods 类型指标）。
 	AverageValue *resource.Quantity `json:"averageValue,omitempty" protobuf:"bytes,3,opt,name=averageValue"`
 
 	// averageUtilization is the target value of the average of the
@@ -355,6 +452,14 @@ type MetricTarget struct {
 	// the requested value of the resource for the pods.
 	// Currently only valid for Resource metric source type
 	// +optional
+	// 含义:
+	//表示 目标的资源利用率的百分比，以 CPU 或内存的百分比形式提供。
+	//
+	//场景:
+	//使用时，该值与 Pod 的资源配额（Resource Request）相比，表示实际使用量占配额的百分比。
+	//
+	//适用的指标:
+	//仅支持 Resource 类型指标，即针对 CPU 和内存。
 	AverageUtilization *int32 `json:"averageUtilization,omitempty" protobuf:"bytes,4,opt,name=averageUtilization"`
 }
 

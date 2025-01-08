@@ -225,6 +225,7 @@ func (e *TokensController) queueSecretUpdateSync(oldObj interface{}, newObj inte
 
 func (e *TokensController) syncServiceAccount(ctx context.Context) {
 	logger := klog.FromContext(ctx)
+	// 监视 ServiceAccount的行为
 	key, quit := e.syncServiceAccountQueue.Get()
 	if quit {
 		return
@@ -242,6 +243,8 @@ func (e *TokensController) syncServiceAccount(ctx context.Context) {
 		return
 	}
 
+	// 不管是 add 还是 update 还是 delete 操作
+	// 只找到已经被删除的ServiceAccount并删除所有相应的 ServiceAccount 令牌 Secret。
 	sa, err := e.getServiceAccount(saInfo.namespace, saInfo.name, saInfo.uid, false)
 	switch {
 	case err != nil:
@@ -283,9 +286,12 @@ func (e *TokensController) syncSecret(ctx context.Context) {
 	case err != nil:
 		logger.Error(err, "Getting secret")
 		retry = true
+	// 当是删除 secret 的时候
 	case secret == nil:
 		// If the service account exists
+		// 去看 service account 存不存在
 		if sa, saErr := e.getServiceAccount(secretInfo.namespace, secretInfo.saName, secretInfo.saUID, false); saErr == nil && sa != nil {
+			// 如果存在，就要根据需要从相应的 ServiceAccount 中删除引用
 			// secret no longer exists, so delete references to this secret from the service account
 			if err := clientretry.RetryOnConflict(RemoveTokenBackoff, func() error {
 				return e.removeSecretReference(secretInfo.namespace, secretInfo.saName, secretInfo.saUID, secretInfo.name)
@@ -293,13 +299,17 @@ func (e *TokensController) syncSecret(ctx context.Context) {
 				logger.Error(err, "Removing secret reference")
 			}
 		}
+	// 当是新增或者更新 secret
 	default:
 		// Ensure service account exists
+		// 确保引用的 ServiceAccount 存在
 		sa, saErr := e.getServiceAccount(secretInfo.namespace, secretInfo.saName, secretInfo.saUID, true)
 		switch {
+		// 报错了，重试吧
 		case saErr != nil:
 			logger.Error(saErr, "Getting service account")
 			retry = true
+		// ServiceAccount不存在，把这个 token 也删了
 		case sa == nil:
 			// Delete token
 			logger.V(4).Info("Service account does not exist, deleting token", "secret", klog.KRef(secretInfo.namespace, secretInfo.name))
@@ -307,8 +317,10 @@ func (e *TokensController) syncSecret(ctx context.Context) {
 				logger.Error(err, "Deleting serviceaccount token", "secret", klog.KRef(secretInfo.namespace, secretInfo.name), "serviceAccount", klog.KRef(secretInfo.namespace, secretInfo.saName))
 				retry = retriable
 			}
+		// sa 存在
 		default:
 			// Update token if needed
+			// 给 secret 增加 token
 			if retriable, err := e.generateTokenIfNeeded(logger, sa, secret); err != nil {
 				logger.Error(err, "Populating serviceaccount token", "secret", klog.KRef(secretInfo.namespace, secretInfo.name), "serviceAccount", klog.KRef(secretInfo.namespace, secretInfo.saName))
 				retry = retriable
@@ -367,6 +379,7 @@ func (e *TokensController) secretUpdateNeeded(secret *v1.Secret) (bool, bool, bo
 // generateTokenIfNeeded populates the token data for the given Secret if not already set
 func (e *TokensController) generateTokenIfNeeded(logger klog.Logger, serviceAccount *v1.ServiceAccount, cachedSecret *v1.Secret) ( /* retry */ bool, error) {
 	// Check the cached secret to see if changes are needed
+	// 检查缓存的 Secret 以确定是否需要进行更改
 	if needsCA, needsNamespace, needsToken := e.secretUpdateNeeded(cachedSecret); !needsCA && !needsToken && !needsNamespace {
 		return false, nil
 	}

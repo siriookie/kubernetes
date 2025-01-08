@@ -109,6 +109,10 @@ func (c *Controller) Run(ctx context.Context) {
 	// runLeaseWorker handles legit identity lease deletion, while runStorageVersionWorker
 	// handles storageversion creation/update with non-existing id. The latter should rarely
 	// happen. It's okay for the two workers to conflict on update.
+	// 身份租约删除和 storageversion 更新不会发生得太频繁。为每个任务启动一个工作线程。
+	// runLeaseWorker 处理合法的身份租约删除，而 runStorageVersionWorker 处理存储版本的创建/更新，
+	// 这通常是因为不存在相关的 ID。后者的情况应该很少发生。
+	// 这两个工作线程在更新时发生冲突是可以接受的。
 	go wait.UntilWithContext(ctx, c.runLeaseWorker, time.Second)
 	go wait.UntilWithContext(ctx, c.runStorageVersionWorker, time.Second)
 
@@ -161,6 +165,8 @@ func (c *Controller) processNextStorageVersion(ctx context.Context) bool {
 	return true
 }
 
+// 目的是处理身份租约（lease）被删除的情况，并执行相关的清理操作，
+// 尤其是更新或删除与该租约相关的存储版本（storage version）。
 func (c *Controller) processDeletedLease(ctx context.Context, name string) error {
 	_, err := c.kubeclientset.CoordinationV1().Leases(metav1.NamespaceSystem).Get(ctx, name, metav1.GetOptions{})
 	// the lease isn't deleted, nothing we need to do here

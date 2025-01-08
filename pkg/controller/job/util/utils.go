@@ -23,6 +23,8 @@ import (
 
 // FinishedCondition returns true if a job is finished as well as the condition type indicating that.
 // Returns false and no condition type otherwise
+// "FinishedCondition" 函数会返回 true，如果一个任务已经完成，并且会返回表示任务完成的条件类型。
+// 如果任务未完成，它将返回 false，并且没有条件类型。
 func FinishedCondition(j *batch.Job) (bool, batch.JobConditionType) {
 	for _, c := range j.Status.Conditions {
 		if (c.Type == batch.JobComplete || c.Type == batch.JobFailed) && c.Status == v1.ConditionTrue {

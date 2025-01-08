@@ -299,6 +299,7 @@ func (dc *DeploymentController) getNewReplicaSet(ctx context.Context, d *apps.De
 func (dc *DeploymentController) scale(ctx context.Context, deployment *apps.Deployment, newRS *apps.ReplicaSet, oldRSs []*apps.ReplicaSet) error {
 	// If there is only one active replica set then we should scale that up to the full count of the
 	// deployment. If there is no active replica set, then we should scale up the newest replica set.
+	// 找到有 pod 的 replicaset 或者没有 pod 但是最新的，都去建立一个新的 replicaset,更新
 	if activeOrLatest := deploymentutil.FindActiveOrLatest(newRS, oldRSs); activeOrLatest != nil {
 		if *(activeOrLatest.Spec.Replicas) == *(deployment.Spec.Replicas) {
 			return nil
@@ -306,10 +307,12 @@ func (dc *DeploymentController) scale(ctx context.Context, deployment *apps.Depl
 		_, _, err := dc.scaleReplicaSetAndRecordEvent(ctx, activeOrLatest, *(deployment.Spec.Replicas), deployment)
 		return err
 	}
-
+	//如果找到的有 pod 的 replicaset 大于 1 "103": "xxxx"
+	//  "102": "xvdsvs"，并且最新的 replicaset 已经满足了 deployment 的部署要求
 	// If the new replica set is saturated, old replica sets should be fully scaled down.
 	// This case handles replica set adoption during a saturated new replica set.
 	if deploymentutil.IsSaturated(deployment, newRS) {
+		//把老的 replicaset 的 pod 全部设成 0
 		for _, old := range controller.FilterActiveReplicaSets(oldRSs) {
 			if _, _, err := dc.scaleReplicaSetAndRecordEvent(ctx, old, 0, deployment); err != nil {
 				return err
@@ -321,10 +324,15 @@ func (dc *DeploymentController) scale(ctx context.Context, deployment *apps.Depl
 	// There are old replica sets with pods and the new replica set is not saturated.
 	// We need to proportionally scale all replica sets (new and old) in case of a
 	// rolling deployment.
+	//如果新的 replicaset 并不满足部署需求，而且有多个 replicaset 存在大于 0 的 pod
+	// 如果策略是滚动升级
 	if deploymentutil.IsRollingUpdate(deployment) {
+		// 找出活跃的replicaset
 		allRSs := controller.FilterActiveReplicaSets(append(oldRSs, newRS))
+		// 拿到活着的 pod 数
 		allRSsReplicas := deploymentutil.GetReplicaCountForReplicaSets(allRSs)
 
+		// 计算出最大允许多少个 pod 存活
 		allowedSize := int32(0)
 		if *(deployment.Spec.Replicas) > 0 {
 			allowedSize = *(deployment.Spec.Replicas) + deploymentutil.MaxSurge(*deployment)
@@ -333,6 +341,7 @@ func (dc *DeploymentController) scale(ctx context.Context, deployment *apps.Depl
 		// Number of additional replicas that can be either added or removed from the total
 		// replicas count. These replicas should be distributed proportionally to the active
 		// replica sets.
+		// deployment 允许的 pod-还活着的 pod = 最多还能存在几个pod
 		deploymentReplicasToAdd := allowedSize - allRSsReplicas
 
 		// The additional replicas should be distributed proportionally amongst the active
@@ -342,9 +351,11 @@ func (dc *DeploymentController) scale(ctx context.Context, deployment *apps.Depl
 		// when scaling down, we should scale down older replica sets first.
 		switch {
 		case deploymentReplicasToAdd > 0:
+			// 存活 pod 多的排在前面,如果一样多 新的在前面
 			sort.Sort(controller.ReplicaSetsBySizeNewer(allRSs))
 
 		case deploymentReplicasToAdd < 0:
+			// 存活pod 多的在前面，一样多的 老的在前面
 			sort.Sort(controller.ReplicaSetsBySizeOlder(allRSs))
 		}
 
@@ -354,6 +365,7 @@ func (dc *DeploymentController) scale(ctx context.Context, deployment *apps.Depl
 		deploymentReplicasAdded := int32(0)
 		nameToSize := make(map[string]int32)
 		logger := klog.FromContext(ctx)
+		//计算出每个 replicaset 应该减少或增加几个 pod
 		for i := range allRSs {
 			rs := allRSs[i]
 

@@ -47,6 +47,19 @@ const (
 	//   deletion and prevent new objects from being created in the terminating namespace
 	// * non-leader etcd servers to observe last-minute object creations in a namespace
 	//   so this controller's cleanup can actually clean up all objects
+	//在接收到一个命名空间（namespace）的删除事件后，NamespaceController 等待一定时间再开始处理这个事件的延迟时间，具体来说是 5 秒钟。
+	//生命周期（Lifecycle）准入插件的观察时间
+	//
+	//Kubernetes 有生命周期准入插件（Lifecycle Admission Plugins），它们可以拦截和管理资源的创建和删除请求。
+	//在高可用（HA）的 API Server 部署中，不同的 API Server 节点需要观察到同一个命名空间的删除事件。
+	//延迟的作用：
+	//确保所有 API Server 节点都能够感知到命名空间的删除事件，并禁止在正在删除（Terminating）状态的命名空间中创建新对象。
+	//非主节点（Non-leader）etcd 观察时间
+	//
+	//Kubernetes 使用 etcd 作为存储后端。当命名空间中的对象在删除前被大量快速创建，可能有些操作还没被所有 etcd 节点完全观察到。
+	//延迟的作用：
+	//给 etcd 集群的非主节点（如 follower 节点）足够的时间去同步和观察命名空间中的新创建对象。
+	//确保在后续的清理过程中，NamespaceController 能够删除命名空间内的所有资源对象，而不会漏掉刚刚同步的对象。
 	namespaceDeletionGracePeriod = 5 * time.Second
 )
 
@@ -90,6 +103,7 @@ func NewNamespaceController(
 				namespace := obj.(*v1.Namespace)
 				namespaceController.enqueueNamespace(namespace)
 			},
+			//当命名空间从 Active 状态转为 Terminating 状态时会触发 UpdateFunc，此时正是执行资源清理的开始。
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				namespace := newObj.(*v1.Namespace)
 				namespaceController.enqueueNamespace(namespace)
@@ -109,8 +123,13 @@ func NewNamespaceController(
 func nsControllerRateLimiter() workqueue.TypedRateLimiter[string] {
 	return workqueue.NewTypedMaxOfRateLimiter(
 		// this ensures that we retry namespace deletion at least every minute, never longer.
+		//起始重试间隔：5ms，确保短时间内能快速重试。
+		//最大重试间隔：60秒，失败项最多每分钟会被重试一次。
 		workqueue.NewTypedItemExponentialFailureRateLimiter[string](5*time.Millisecond, 60*time.Second),
 		// 10 qps, 100 bucket size.  This is only for retry speed and its only the overall factor (not per item)
+		//原理：基于一个令牌桶（Token Bucket）算法，限制总体的速率。
+		//每秒令牌生成速率：10 QPS，即每秒最多可以处理 10 个命名空间清理操作。
+		//桶的大小：100，在突发情况下最多可以排队处理 100 个任务。
 		&workqueue.TypedBucketRateLimiter[string]{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
 	)
 }
@@ -126,6 +145,7 @@ func (nm *NamespaceController) enqueueNamespace(obj interface{}) {
 
 	namespace := obj.(*v1.Namespace)
 	// don't queue if we aren't deleted
+	//不是待删除的就不要入队了
 	if namespace.DeletionTimestamp == nil || namespace.DeletionTimestamp.IsZero() {
 		return
 	}
@@ -139,6 +159,9 @@ func (nm *NamespaceController) enqueueNamespace(obj interface{}) {
 // Each namespace can be in the queue at most once.
 // The system ensures that no two workers can process
 // the same namespace at the same time.
+// worker 处理命名空间对象的队列。
+// 每个命名空间在队列中最多只能存在一次。
+// 系统确保不会有两个 worker 同时处理相同的命名空间。
 func (nm *NamespaceController) worker(ctx context.Context) {
 	workFunc := func(ctx context.Context) bool {
 		key, quit := nm.queue.Get()
@@ -153,12 +176,14 @@ func (nm *NamespaceController) worker(ctx context.Context) {
 			nm.queue.Forget(key)
 			return false
 		}
-
+		// 删除出错了
+		// 1.不是出错，是estimate的值大于 0，代表 finalizer 还没执行完，就再入一次队
 		if estimate, ok := err.(*deletion.ResourcesRemainingError); ok {
 			t := estimate.Estimate/2 + 1
 			klog.FromContext(ctx).V(4).Info("Content remaining in namespace", "namespace", key, "waitSeconds", t)
 			nm.queue.AddAfter(key, time.Duration(t)*time.Second)
 		} else {
+			// 2. 出错，也是入队
 			// rather than wait for a full resync, re-add the namespace to the queue to be processed
 			nm.queue.AddRateLimited(key)
 			utilruntime.HandleError(fmt.Errorf("deletion of namespace %v failed: %v", key, err))
@@ -181,16 +206,18 @@ func (nm *NamespaceController) syncNamespaceFromKey(ctx context.Context, key str
 	defer func() {
 		logger.V(4).Info("Finished syncing namespace", "namespace", key, "duration", time.Since(startTime))
 	}()
-
 	namespace, err := nm.lister.Get(key)
+	// 如果已经在本地缓存都被删除了，说明删除的流程已经走完了
 	if errors.IsNotFound(err) {
 		logger.Info("Namespace has been deleted", "namespace", key)
 		return nil
 	}
+	// 有未知错误，返回
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Unable to retrieve namespace %v from store: %v", key, err))
 		return err
 	}
+	// 没有被删除 去删除
 	return nm.namespacedResourcesDeleter.Delete(ctx, namespace.Name)
 }
 

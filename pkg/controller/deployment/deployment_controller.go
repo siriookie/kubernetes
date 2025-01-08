@@ -23,9 +23,6 @@ package deployment
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"time"
-
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -47,6 +44,8 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/deployment/util"
+	"reflect"
+	"time"
 )
 
 const (
@@ -172,7 +171,6 @@ func (dc *DeploymentController) Run(ctx context.Context, workers int) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting controller", "controller", "deployment")
 	defer logger.Info("Shutting down controller", "controller", "deployment")
-
 	if !cache.WaitForNamedCacheSync("deployment", ctx.Done(), dc.dListerSynced, dc.rsListerSynced, dc.podListerSynced) {
 		return
 	}

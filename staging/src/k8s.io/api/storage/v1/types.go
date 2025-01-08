@@ -108,6 +108,9 @@ const (
 	// should not be provisioned and bound until the first Pod is created that
 	// references the PeristentVolumeClaim.  The volume provisioning and
 	// binding will occur during Pod scheduing.
+	// PVC（Persistent Volume Claim）的延迟绑定模式（Delay Binding Mode）是一种特性，
+	//允许用户在创建 PVC 时不立即绑定到特定的 PV（Persistent Volume）。
+	//而是可以在 PVC 满足特定条件时再进行绑定。
 	VolumeBindingWaitForFirstConsumer VolumeBindingMode = "WaitForFirstConsumer"
 )
 

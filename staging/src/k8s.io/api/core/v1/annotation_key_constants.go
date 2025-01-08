@@ -78,6 +78,9 @@ const (
 	// ObjectTTLAnnotationKey represents a suggestion for kubelet for how long it can cache
 	// an object (e.g. secret, config map) before fetching it again from apiserver.
 	// This annotation can be attached to node.
+	// ObjectTTLAnnotationKey 是 Kubernetes 中用于指定缓存对象（例如 Secret 或 ConfigMap）在节点上的存储时间的建议。
+	//这是一个注解键，通常附加在节点（Node）资源上，表示节点中的 kubelet 可以在多长时间内缓存特定对象，
+	//而无需从 API Server 再次获取。
 	ObjectTTLAnnotationKey string = "node.alpha.kubernetes.io/ttl"
 
 	// NonConvertibleAnnotationPrefix is the annotation key prefix used to identify non-convertible json paths.

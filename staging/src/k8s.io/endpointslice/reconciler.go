@@ -80,18 +80,25 @@ type endpointMeta struct {
 // compares them with the endpoints already present in any existing endpoint
 // slices for the given service. It creates, updates, or deletes endpoint slices
 // to ensure the desired set of pods are represented by endpoint slices.
+// Reconcile（调和）是一个函数，它检查当前匹配某个服务选择器（Service Selector）的所有 Pods。
+// 它将这些 Pods 与给定服务已经存在的 EndpointSlices 中的 Endpoints 进行对比。
+// 根据比较结果，Reconcile 会创建、更新或者删除这些 EndpointSlices，以确保服务中所期望的 Pods 被正确地表示在 EndpointSlices 中。
 func (r *Reconciler) Reconcile(logger klog.Logger, service *corev1.Service, pods []*corev1.Pod, existingSlices []*discovery.EndpointSlice, triggerTime time.Time) error {
 	slicesToDelete := []*discovery.EndpointSlice{}                                    // slices that are no longer  matching any address the service has
 	errs := []error{}                                                                 // all errors generated in the process of reconciling
 	slicesByAddressType := make(map[discovery.AddressType][]*discovery.EndpointSlice) // slices by address type
 
 	// addresses that this service supports [o(1) find]
+	// 拿 到 service 支 持 的 ip 地 址， 放 进 set 里
 	serviceSupportedAddressesTypes := getAddressTypesForService(logger, service)
 
 	// loop through slices identifying their address type.
 	// slices that no longer match address type supported by services
 	// go to delete, other slices goes to the Reconciler machinery
 	// for further adjustment
+	// 遍 历 service 的 existingSlices，碰 到 Slice的AddressType 不 在 service 支 持 的 AddressType 内 的
+	// 如 果 有 topologyCache ，就 要 在 topologyCache 里 删 除 这  个 service 的 相 关 信 息
+	// 把 slice 加 到 slicesToDelete 中 ， 最 后 要 删 除 的
 	for _, existingSlice := range existingSlices {
 		// service no longer supports that address type, add it to deleted slices
 		if !serviceSupportedAddressesTypes.Has(existingSlice.AddressType) {
@@ -112,11 +119,12 @@ func (r *Reconciler) Reconcile(logger klog.Logger, service *corev1.Service, pods
 		if _, ok := slicesByAddressType[existingSlice.AddressType]; !ok {
 			slicesByAddressType[existingSlice.AddressType] = make([]*discovery.EndpointSlice, 0, 1)
 		}
-
+		// 如 果 存 在 这 个 AddressType ， 就 加 入  map
 		slicesByAddressType[existingSlice.AddressType] = append(slicesByAddressType[existingSlice.AddressType], existingSlice)
 	}
 
 	// reconcile for existing.
+	// 遍 历 serviceSupportedAddressesTypes ， 找 到 每 种  type 对 应 的 existingSlices
 	for addressType := range serviceSupportedAddressesTypes {
 		existingSlices := slicesByAddressType[addressType]
 		err := r.reconcileByAddressType(logger, service, pods, existingSlices, triggerTime, addressType)
@@ -144,6 +152,8 @@ func (r *Reconciler) Reconcile(logger klog.Logger, service *corev1.Service, pods
 // compares them with the endpoints already present in any existing endpoint
 // slices (by address type) for the given service. It creates, updates, or deletes endpoint slices
 // to ensure the desired set of pods are represented by endpoint slices.
+// reconcileByAddressType 获取当前与服务选择器匹配的 Pod 集合，并与给定服务下已有的 EndpointSlice（按照地址类型分类）进行比较。
+// 它会 创建、更新 或 删除 EndpointSlice，以确保所有期望的 Pod 都能被正确地映射到相应的 EndpointSlice 中。
 func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.Service, pods []*corev1.Pod, existingSlices []*discovery.EndpointSlice, triggerTime time.Time, addressType discovery.AddressType) error {
 	errs := []error{}
 
@@ -153,12 +163,54 @@ func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.
 	events := []*topologycache.EventBuilder{}
 
 	// Build data structures for existing state.
+	// 根 据 port 的 hash 创 建 一 个 map，value 是 slice 的 list
+	//{
+	//
+	//    "ephash":[{apiVersion: discovery.k8s.io/v1
+	//kind: EndpointSlice
+	//metadata:
+	//  name: my-service-abcdef123456
+	//  namespace: default
+	//  labels:
+	//    kubernetes.io/service-name: my-service
+	//addressType: IPv4
+	//endpoints:
+	//  - addresses:
+	//      - 10.1.1.10
+	//    conditions:
+	//      ready: true
+	//  - addresses:
+	//      - 10.1.1.11
+	//    conditions:
+	//      ready: true
+	//  - addresses:
+	//      - 10.1.1.12
+	//    conditions:
+	//      ready: false # 表示这个 Pod 不处于 ready 状态
+	//ports:
+	//  - name: http
+	//    protocol: TCP
+	//    port: 80
+	//        },{}]
+	//    //ephash likes : ports:
+	//                        - name: http
+	//                            protocol: TCP
+	//                            port: 80
+	//}
 	existingSlicesByPortMap := map[endpointsliceutil.PortMapKey][]*discovery.EndpointSlice{}
 	for _, existingSlice := range existingSlices {
 		if ownedBy(existingSlice, service) {
+			/* ports:
+			- name: http
+			  protocol: TCP
+			  port: 80
+			*/
+			// 把 上 面 这 种数 据  进 行 hash
 			epHash := endpointsliceutil.NewPortMapKey(existingSlice.Ports)
+			//{epHash:[ *v1.EndpointSlice, *v1.EndpointSlice, *v1.EndpointSlice]}
 			existingSlicesByPortMap[epHash] = append(existingSlicesByPortMap[epHash], existingSlice)
 		} else {
+			// 能 根 据 service  查 出 来  endpointsclice 但 是 这 个  endpointslice 的 owner 不 是 这 个 service 时 才 会
 			slicesToDelete = append(slicesToDelete, existingSlice)
 		}
 	}
@@ -166,18 +218,21 @@ func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.
 	// Build data structures for desired state.
 	desiredMetaByPortMap := map[endpointsliceutil.PortMapKey]*endpointMeta{}
 	desiredEndpointsByPortMap := map[endpointsliceutil.PortMapKey]endpointsliceutil.EndpointSet{}
-
+	//  循 环 遍 历  pod 创建出EndpointSet
 	for _, pod := range pods {
+		// 去 除 掉 phase == v1.PodFailed || phase == v1.PodSucceeded 的 pod 和
+		// 没 有 ip 地 址 的 pod
 		if !endpointsliceutil.ShouldPodBeInEndpoints(pod, true) {
 			continue
 		}
 
 		endpointPorts := getEndpointPorts(logger, service, pod)
+		// 把 endpointPorts 进 行 hash 存 进 desiredEndpointsByPortMap
 		epHash := endpointsliceutil.NewPortMapKey(endpointPorts)
 		if _, ok := desiredEndpointsByPortMap[epHash]; !ok {
 			desiredEndpointsByPortMap[epHash] = endpointsliceutil.EndpointSet{}
 		}
-
+		// 把 endpointPorts 进 行 hash 存 进 desiredMetaByPortMap
 		if _, ok := desiredMetaByPortMap[epHash]; !ok {
 			desiredMetaByPortMap[epHash] = &endpointMeta{
 				addressType: addressType,
@@ -205,6 +260,7 @@ func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.
 				continue
 			}
 		}
+		// 生 成 endpoint 对 象
 		endpoint := podToEndpoint(pod, node, service, addressType)
 		if len(endpoint.Addresses) > 0 {
 			desiredEndpointsByPortMap[epHash].Insert(&endpoint)
@@ -216,8 +272,10 @@ func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.
 	totalRemoved := 0
 
 	// Determine changes necessary for each group of slices by port map.
+	// 遍 历 desiredEndpointsByPortMap
 	for portMap, desiredEndpoints := range desiredEndpointsByPortMap {
 		numEndpoints := len(desiredEndpoints)
+		// 拿 到 每 个 port 对 应 的 需 要 创 建 的 、 更 新 的 、 删 除 的  endpointSlices
 		pmSlicesToCreate, pmSlicesToUpdate, pmSlicesToDelete, added, removed := r.reconcileByPortMapping(
 			logger, service, existingSlicesByPortMap[portMap], desiredEndpoints, desiredMetaByPortMap[portMap])
 
@@ -243,6 +301,8 @@ func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.
 	}
 
 	// When no endpoint slices would usually exist, we need to add a placeholder.
+	//这些条件组合意味着服务当前处于 没有可用端点 的状态，且操作后将不存在 EndpointSlice。
+	//但为了避免该服务完全没有 EndpointSlice，需要创建一个占位符。
 	if len(existingSlices) == len(slicesToDelete) && len(slicesToCreate) < 1 {
 		// Check for existing placeholder slice outside of the core control flow
 		placeholderSlice := newEndpointSlice(logger, service, &endpointMeta{ports: []discovery.EndpointPort{}, addressType: addressType}, r.controllerName)
@@ -267,6 +327,11 @@ func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.
 	// Topology hints are assigned per address type. This means it is
 	// theoretically possible for endpoints of one address type to be assigned
 	// hints while another endpoints of another address type are not.
+	//这段代码在 EndpointSlice 控制器的拓扑缓存中：
+	//
+	//为当前服务和地址类型提供清晰的 EndpointSlice 操作信息。
+	//将 EndpointSlice 的状态分类（新增、更新、不变），为后续调度或拓扑优化提供基础数据。
+	//确保拓扑提示可以有针对性地作用于特定地址类型的端点。
 	si := &topologycache.SliceInfo{
 		ServiceKey:  fmt.Sprintf("%s/%s", service.Namespace, service.Name),
 		AddressType: addressType,
@@ -281,11 +346,11 @@ func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.
 	//
 	// This if/else clause can be removed once the annotation has been deprecated.
 	// Ref: https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/4444-service-routing-preference
+	//检查服务的拓扑注释是否启用了拓扑提示功能
 	if r.topologyCache != nil && hintsEnabled(service.Annotations) {
 		// Reaching this point means that we need to configure hints based on the
 		// topology annotation.
 		slicesToCreate, slicesToUpdate, events = r.topologyCache.AddHints(logger, si)
-
 	} else {
 		// Reaching this point means that we will not be configuring hints based on
 		// the topology annotation. We need to do 2 things:
@@ -301,6 +366,15 @@ func (r *Reconciler) reconcileByAddressType(logger klog.Logger, service *corev1.
 		//     within topologyCache.RemoveHints)
 
 		// Check 1.
+		//清理之前添加的提示（Hints）：
+		//
+		//如果拓扑缓存 (topologyCache) 存在且之前已经基于拓扑注释添加了区域提示，首先会清理这些缓存的提示。r.topologyCache.HasPopulatedHints 会检查该服务的拓扑提示是否已经被填充。如果填充过，则会触发清除提示的操作，并记录事件告警 (EventBuilder)，提示拓扑注释已更改，导致这些提示需要被移除。
+		//接着，调用 r.topologyCache.RemoveHints 去移除之前添加的区域提示，防止不再需要的提示干扰后续配置。
+		//可选地移除 EndpointSlice 中的实际提示：
+		//
+		//如果 trafficDistribution 字段不再使用，系统也会尝试从 EndpointSlice 中移除这些提示。这是在 trafficDistribution 配置没有被使用的情况下，移除通过拓扑注释配置的区域提示。如果配置了 trafficDistribution，则不删除提示，避免不必要的删除与再创建过程，因为这会增加额外的负担。
+		//
+		//对于移除提示的实际操作，调用了 topologycache.RemoveHintsFromSlices(si)，它会根据当前的条件移除指定 EndpointSlice 中的提示。
 		if r.topologyCache != nil {
 			if r.topologyCache.HasPopulatedHints(si.ServiceKey) {
 				logger.Info("TopologyAwareHints annotation has changed, removing hints", "serviceKey", si.ServiceKey, "addressType", si.AddressType)
@@ -411,7 +485,6 @@ func (r *Reconciler) finalize(
 			i++
 		}
 	}
-
 	// Don't create new EndpointSlices if the Service is pending deletion. This
 	// is to avoid a potential race condition with the garbage collector where
 	// it tries to delete EndpointSlices as this controller replaces them.
@@ -478,6 +551,21 @@ func (r *Reconciler) finalize(
 //     any remaining desired endpoints.
 //  3. If there still desired endpoints left, try to fit them into a previously
 //     unchanged slice and/or create new ones.
+//
+// 迭 代 现 有 的  EndpointSlices：
+//
+// 删 除 那 些 不 再 需 要 的 端 点；
+// 更 新 那 些 发 生 变 化 的 端 点；
+// 检 查 每 个 Slice 的 标 签 是 否 与 其 父 级  Service 一 致， 不 一 致 时 进 行 修 复。
+// 填 充 已 修 改 的 Slices：
+//
+// 将 第 一 步 中 剩 余 的 （ 未 填 充 的 ） 期 望 端 点 填 入 已 修 改 的  Slices， 最 大 化 复 用 现 有 资 源。
+// 复 用 或 创 建  Slices：
+//
+// 如 果 还 有 多 余 的 端 点 未 被 分 配 到 任 何  Slice，尝 试 将 它 们 加 入 未 被 修 改 的 Slice；
+// 若  仍 然 无 法 容 纳 ，则 创 建 新 的 EndpointSlices。
+// existingSlices： 通 过 select labels 在 本 地 缓 存 中 直 接 select 出 来 的 EndpointSlice
+// desiredSet： 根 据 service 的 现 状 和  现 有 的 pod 组 装 出 来 的 EndpointSlice
 func (r *Reconciler) reconcileByPortMapping(
 	logger klog.Logger,
 	service *corev1.Service,
@@ -493,22 +581,28 @@ func (r *Reconciler) reconcileByPortMapping(
 
 	// 1. Iterate through existing slices to delete endpoints no longer desired
 	//    and update endpoints that have changed
+	//  遍 历 通 过 select labels 在 本 地 缓 存 中 直 接 select 出 来 的 EndpointSlices
 	for _, existingSlice := range existingSlices {
 		slicesByName[existingSlice.Name] = existingSlice
 		newEndpoints := []discovery.Endpoint{}
 		endpointUpdated := false
+		// 遍 历 通 过 select labels 在 本 地 缓 存 中 直 接 select 出 来 的 EndpointSlice
 		for _, endpoint := range existingSlice.Endpoints {
+			// 检 查 endpoint 是 否 存 在 于 根 据 service 的 现 状 和  现 有 的 pod 组 装 出 来 的 EndpointSlice 中
 			got := desiredSet.Get(&endpoint)
 			// If endpoint is desired add it to list of endpoints to keep.
 			if got != nil {
+				// 找 到 了， 说 明 没 有 被 删 除
 				newEndpoints = append(newEndpoints, *got)
 				// If existing version of endpoint doesn't match desired version
 				// set endpointUpdated to ensure endpoint changes are persisted.
+				// 比 较 除 了 hash 的 字 段 之 外 的 字 段
 				if !endpointsliceutil.EndpointsEqualBeyondHash(got, &endpoint) {
 					endpointUpdated = true
 				}
 				// once an endpoint has been placed/found in a slice, it no
 				// longer needs to be handled
+				// 找 到 之 后 就 不 需 要 再 存 在 desiredSet 中 了，因 为 加入到了newEndpoints，下 面 会 处 理 这 个 endpoint
 				desiredSet.Delete(&endpoint)
 			}
 		}
@@ -517,14 +611,18 @@ func (r *Reconciler) reconcileByPortMapping(
 		labels, labelsChanged := setEndpointSliceLabels(logger, existingSlice, service, r.controllerName)
 
 		// If an endpoint was updated or removed, mark for update or delete
+		// Endpoints 发 生 了 更 新 或 者 删 除
 		if endpointUpdated || len(existingSlice.Endpoints) != len(newEndpoints) {
+			// 老 的 大 于 新 的 ， 说 明 有 Endpoint 被 删 除 了
 			if len(existingSlice.Endpoints) > len(newEndpoints) {
 				numRemoved += len(existingSlice.Endpoints) - len(newEndpoints)
 			}
+			// 说 明 整 个 Endpoints 都 被 删 除 了
 			if len(newEndpoints) == 0 {
 				// if no endpoints desired in this slice, mark for deletion
 				sliceNamesToDelete.Insert(existingSlice.Name)
 			} else {
+				// 新 的 旧 的 都 有 值 ，发 生 更 新  了 ， 直 接 用 新 的 覆 盖 旧 的
 				// otherwise, copy and mark for update
 				epSlice := existingSlice.DeepCopy()
 				epSlice.Endpoints = newEndpoints
@@ -532,18 +630,19 @@ func (r *Reconciler) reconcileByPortMapping(
 				slicesByName[existingSlice.Name] = epSlice
 				sliceNamesToUpdate.Insert(epSlice.Name)
 			}
-		} else if labelsChanged {
+		} else if labelsChanged { /* 没 有 发 生 变 更 ， 但 是  labels 变 了*/
 			// if labels have changed, copy and mark for update
 			epSlice := existingSlice.DeepCopy()
 			epSlice.Labels = labels
 			slicesByName[existingSlice.Name] = epSlice
 			sliceNamesToUpdate.Insert(epSlice.Name)
 		} else {
+			// 没 有 发 生 变 更
 			// slices with no changes will be useful if there are leftover endpoints
 			sliceNamesUnchanged.Insert(existingSlice.Name)
 		}
 	}
-
+	// 剩下的就是新增的 endpoint
 	numAdded := desiredSet.Len()
 
 	// 2. If we still have desired endpoints to add and slices marked for update,
@@ -559,6 +658,7 @@ func (r *Reconciler) reconcileByPortMapping(
 
 		// Iterate through slices and fill them up with desired endpoints.
 		for _, slice := range slices {
+			// 给每一个 endpointSlice 都加上这个 endpoint
 			for desiredSet.Len() > 0 && len(slice.Endpoints) < int(r.maxEndpointsPerSlice) {
 				endpoint, _ := desiredSet.PopAny()
 				slice.Endpoints = append(slice.Endpoints, *endpoint)
@@ -569,6 +669,11 @@ func (r *Reconciler) reconcileByPortMapping(
 	// 3. If there are still desired endpoints left at this point, we try to fit
 	//    the endpoints in a single existing slice. If there are no slices with
 	//    that capacity, we create new slices for the endpoints.
+	//尝试填充到现有的 EndpointSlice 中：
+	//遍历当前存在的 EndpointSlice，检查其剩余容量（空位）。
+	//如果找到一个可以容纳这些端点的 Slice，就将剩余端点分配到这个 Slice 中。
+	//创建新的 EndpointSlice：
+	//如果没有任何现有的 Slice 能够容纳这些剩余端点，那么就 创建新的 EndpointSlice，并将这些端点加入其中。
 	slicesToCreate := []*discovery.EndpointSlice{}
 
 	for desiredSet.Len() > 0 {
@@ -641,6 +746,7 @@ func (r *Reconciler) ManagedByChanged(endpointSlice1, endpointSlice2 *discovery.
 
 // ManagedByController returns true if the controller of the provided
 // EndpointSlices is the EndpointSlice controller.
+// 要检查这个 endpointSlice 是不是 被 endpointSliceController 管理的，因为别的第三方服务也可能会建立自己的 endpointSlices
 func (r *Reconciler) ManagedByController(endpointSlice *discovery.EndpointSlice) bool {
 	managedBy := endpointSlice.Labels[discovery.LabelManagedBy]
 	return managedBy == r.controllerName

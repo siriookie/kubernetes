@@ -247,10 +247,12 @@ func (ctrl *PersistentVolumeController) syncClaim(ctx context.Context, claim *v1
 		return err
 	}
 	claim = newClaim
-
+	// 如果 PVC 未绑定 PersistentVolume（PV），调用 syncUnboundClaim 方法处理未绑定逻辑。---->去里面给两个 b 配对，然后掉 api server 绑定起来
+	//如果 PVC 已绑定 PV，调用 syncBoundClaim 方法处理已绑定逻辑。
 	if !metav1.HasAnnotation(claim.ObjectMeta, storagehelpers.AnnBindCompleted) {
 		return ctrl.syncUnboundClaim(ctx, claim)
 	} else {
+		// 根据 spec 找到 PV，判断pv 是否没有绑定或者是否和当前绑定一致，一致就去更新
 		return ctrl.syncBoundClaim(ctx, claim)
 	}
 }
@@ -333,6 +335,15 @@ func (ctrl *PersistentVolumeController) syncUnboundClaim(ctx context.Context, cl
 	// OBSERVATION: pvc is "Pending"
 	logger := klog.FromContext(ctx)
 	if claim.Spec.VolumeName == "" {
+		//1. 动态绑定模式
+		//描述： PVC 没有指定 volumeName 时，表示希望 Kubernetes 动态为其分配一个合适的 PV（PersistentVolume）。
+		//触发条件：
+		//PVC 的 storageClassName 指定了一个存储类（StorageClass）。
+		//存储类配置了 provisioner，能够动态创建 PV。
+		//如果没有匹配的 PV，则 Kubernetes 会通过动态存储卷提供者（如 CSI 插件）创建一个新的 PV。
+		//适用场景：
+		//用户不知道具体的存储卷名称或存储卷不需要预先创建。
+		//常用于云环境下动态创建存储，例如 Amazon EBS、GCE PD。
 		// User did not care which PV they get.
 		delayBinding, err := storagehelpers.IsDelayBindingMode(claim, ctrl.classLister)
 		if err != nil {
@@ -340,6 +351,7 @@ func (ctrl *PersistentVolumeController) syncUnboundClaim(ctx context.Context, cl
 		}
 
 		// [Unit test set 1]
+		// 找到最牛逼的 pv，白马王子
 		volume, err := ctrl.volumes.findBestMatchForClaim(claim, delayBinding)
 		if err != nil {
 			logger.V(2).Info("Synchronizing unbound PersistentVolumeClaim, Error finding PV for claim", "PVC", klog.KObj(claim), "err", err)
@@ -497,6 +509,8 @@ func (ctrl *PersistentVolumeController) syncBoundClaim(ctx context.Context, clai
 
 	logger := klog.FromContext(ctx)
 
+	//如果 claim.Spec.VolumeName 为 空字符串，说明 PVC 不再绑定到任何 PV。
+	//此时，这种解绑状态 已经发生，而不是需要进一步操作。
 	if claim.Spec.VolumeName == "" {
 		// Claim was bound before but not any more.
 		if _, err := ctrl.updateClaimStatusWithEvent(ctx, claim, v1.ClaimLost, nil, v1.EventTypeWarning, "ClaimLost", "Bound claim has lost reference to PersistentVolume. Data on the volume is lost!"); err != nil {
@@ -559,11 +573,15 @@ func (ctrl *PersistentVolumeController) syncBoundClaim(ctx context.Context, clai
 // It's invoked by appropriate cache.Controller callbacks when a volume is
 // created, updated or periodically synced. We do not differentiate between
 // these events.
+// syncVolume 是主要的控制器方法，用于决定对卷执行什么操作。
+// 当卷被创建、更新或定期同步时，它会通过适当的 cache.Controller 回调被调用。
+// 我们不区分这些事件。
 func (ctrl *PersistentVolumeController) syncVolume(ctx context.Context, volume *v1.PersistentVolume) error {
 	logger := klog.FromContext(ctx)
 	logger.V(4).Info("Synchronizing PersistentVolume", "volumeName", volume.Name, "volumeStatus", getVolumeStatusForLogging(volume))
 	// Set correct "migrated-to" annotations and modify finalizers on PV and update in API server if
 	// necessary
+	//要确保为 PV 设置合适的迁移标记，修改其最终处理器，并在需要时更新 API server
 	newVolume, err := ctrl.updateVolumeMigrationAnnotationsAndFinalizers(ctx, volume)
 	if err != nil {
 		// Nothing was saved; we will fall back into the same
@@ -613,6 +631,14 @@ func (ctrl *PersistentVolumeController) syncVolume(ctx context.Context, volume *
 			// to make sure we will not reclaim a PV wrongly.
 			// Note that only non-released and non-failed volumes will be
 			// updated to Released state when PVC does not exist.
+			// 如果 PersistentVolume（PV）是由外部 PV provisioner 创建的，或者是由外部 PV 绑定器（例如 kube-scheduler）绑定的，在高负载情况下，相应的 PersistentVolumeClaim（PVC）可能尚未同步到控制器的本地缓存中。因此，我们需要对 PVC 进行双重检查：
+			//
+			//1. 首先检查 informer 缓存。
+			//2. 如果在 informer 缓存中找不到，再从 apiserver 中进行检查。
+			//
+			//这样可以确保我们不会错误地回收 PV。
+			//
+			//需要注意的是，只有处于非“已释放”（non-released）状态且非“失败”（non-failed）状态的卷，在 PVC 不存在的情况下才会被更新为“已释放”（Released）状态。
 			if volume.Status.Phase != v1.VolumeReleased && volume.Status.Phase != v1.VolumeFailed {
 				obj, err = ctrl.claimLister.PersistentVolumeClaims(volume.Spec.ClaimRef.Namespace).Get(volume.Spec.ClaimRef.Name)
 				if err != nil && !apierrors.IsNotFound(err) {
@@ -1091,6 +1117,7 @@ func (ctrl *PersistentVolumeController) bindClaimToVolume(ctx context.Context, c
 // both objects as Bound. Volume is saved first.
 // It returns on first error, it's up to the caller to implement some retry
 // mechanism.
+// 更新 pv，更新 pvc
 func (ctrl *PersistentVolumeController) bind(ctx context.Context, volume *v1.PersistentVolume, claim *v1.PersistentVolumeClaim) error {
 	var err error
 	// use updateClaim/updatedVolume to keep the original claim/volume for

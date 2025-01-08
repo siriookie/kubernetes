@@ -65,6 +65,8 @@ func GetPersistentVolumeClass(volume *v1.PersistentVolume) string {
 
 // CheckNodeAffinity looks at the PV node affinity, and checks if the node has the same corresponding labels
 // This ensures that we don't mount a volume that doesn't belong to this node
+// 该函数 CheckNodeAffinity 的主要作用是验证指定的节点标签（nodeLabels）是否符合 PersistentVolume（PV）的 NodeAffinity 要求，
+// 以确保这个 PV 只能被符合条件的节点使用
 func CheckNodeAffinity(pv *v1.PersistentVolume, nodeLabels map[string]string) error {
 	if pv.Spec.NodeAffinity == nil {
 		return nil

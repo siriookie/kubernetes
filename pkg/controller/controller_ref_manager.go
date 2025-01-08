@@ -454,6 +454,10 @@ func NewControllerRevisionControllerRefManager(
 // If the error is nil, either the reconciliation succeeded, or no
 // reconciliation was necessary. The list of ControllerRevisions that you now own is
 // returned.
+// 这段代码的主要功能是管理 ControllerRevision 对象的声明（Claim）。
+// 具体来说，它会遍历传入的 histories 列表，尝试对每个 ControllerRevision 进行声明操作。
+// 如果成功，则将其加入到 claimed 列表中；如果失败，则记录错误信息。
+// 最终返回所有成功声明的对象列表和聚合后的错误信息。
 func (m *ControllerRevisionControllerRefManager) ClaimControllerRevisions(ctx context.Context, histories []*apps.ControllerRevision) ([]*apps.ControllerRevision, error) {
 	var claimed []*apps.ControllerRevision
 	var errlist []error

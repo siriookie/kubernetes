@@ -52,6 +52,9 @@ func (si *SliceInfo) getTotalReadyEndpoints() int {
 //   - It has endpoint hints that would make the minimum allocations necessary
 //     impossible with changes to slices that are already being updated or
 //     created.
+//
+// 检查在没有发生变化的 EndpointSlice 中，每个区域的分配情况，并确保分配的区域提示是正确的，必要时标记该 EndpointSlice 进行更新。
+// 这有助于确保在不同的区域中负载均衡地分配端点信息。
 func (si *SliceInfo) getAllocatedHintsByZone(allocations map[string]allocation) EndpointZoneInfo {
 	allocatedHintsByZone := EndpointZoneInfo{}
 

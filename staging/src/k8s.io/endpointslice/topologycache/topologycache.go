@@ -87,7 +87,9 @@ func (t *TopologyCache) GetOverloadedServices() []string {
 
 // AddHints adds or updates topology hints on EndpointSlices and returns updated
 // lists of EndpointSlices to create and update.
+// AddHints 函数用于为 EndpointSlices 添加或更新拓扑提示，并返回需要创建和更新的 EndpointSlices 列表。
 func (t *TopologyCache) AddHints(logger klog.Logger, si *SliceInfo) ([]*discovery.EndpointSlice, []*discovery.EndpointSlice, []*EventBuilder) {
+	// 所有 endpoints
 	totalEndpoints := si.getTotalReadyEndpoints()
 	allocations, allocationsEvent := t.getAllocations(totalEndpoints)
 	events := []*EventBuilder{}
@@ -206,6 +208,20 @@ func (t *TopologyCache) RemoveHints(serviceKey string, addrType discovery.Addres
 }
 
 // SetNodes updates the Node distribution for the TopologyCache.
+// 节点过滤：
+//
+// 遍历传入的 nodes 列表，逐个检查节点。每个节点首先会进行标签筛选，若标签符合排除条件或节点没有准备好（即不是 ready 状态），则跳过该节点。
+// 获取节点的 CPU 和区域信息：
+//
+// 从每个节点中获取其分配的 CPU 数量和区域（zone）标签。若节点缺少区域标签或者 CPU 信息为空，则认为该节点信息不足，将导致整个流程失败。
+// 更新节点的 CPU 和区域分布信息：
+//
+// 如果节点的信息有效，累加各个区域（zone）的 CPU 信息并统计所有节点的总 CPU 数量（totalCPU）。
+// 如果某个区域第一次出现，则为其创建一个 CPU 条目。如果该区域已经存在，则累加该区域的 CPU 总数。
+// 拓扑缓存的更新：
+//
+// 如果所有节点的 CPU 总和为零，或者某些节点信息不足（例如缺少区域或 CPU 信息），或者有效区域数少于 2 个，则记录为信息不足，并清空相关的 CPU 数据。
+// 如果节点信息充足，计算每个区域的 CPU 比例，更新 cpuRatiosByZone（区域 CPU 比例）。
 func (t *TopologyCache) SetNodes(logger klog.Logger, nodes []*v1.Node) {
 	cpuByZone := map[string]*resource.Quantity{}
 	sufficientNodeInfo := true
@@ -281,6 +297,20 @@ func (t *TopologyCache) hasPopulatedHintsLocked(serviceKey string) bool {
 // getAllocations returns a set of minimum and maximum allocations per zone. If
 // it is not possible to provide allocations that are below the overload
 // threshold, a nil value will be returned.
+// 这段代码定义了 getAllocations 函数，它用于计算并返回每个区域的最小和最大分配。这些分配表示每个区域应该分配多少端点（即“numEndpoints”），
+// 以保持负载平衡和满足资源需求。
+//
+// 具体功能包括：
+//
+// 锁定资源：使用 t.lock.Lock() 和 defer t.lock.Unlock() 来确保线程安全，以防多个协程访问 cpuRatiosByZone 数据时产生竞争条件。
+// 检查 CPU 比例：首先检查 cpuRatiosByZone 是否为空，若为空，返回警告事件，表示拓扑感知提示功能已禁用。
+// 检查区域数目：判断区域数是否少于 2（即少于两个区域的数据），若少，返回警告，表示只有一个区域的节点准备就绪，拓扑感知提示被禁用。
+// 检查区域数与端点数：如果区域数大于端点数，则返回警告，表示缺少足够的端点来分配到每个区域。
+// 分配端点：
+// 对每个区域，根据 CPU 比例计算每个区域的期望端点数。
+// 计算每个区域的最小分配值，并确保总的最小分配值不超过提供的端点总数。
+// 如果某个区域的最小分配值超过总端点数，返回警告事件。
+// 最大分配：最终计算每个区域的最大分配数量，它是最小分配量加上剩余的端点数。
 func (t *TopologyCache) getAllocations(numEndpoints int) (map[string]allocation, *EventBuilder) {
 	t.lock.Lock()
 	defer t.lock.Unlock()

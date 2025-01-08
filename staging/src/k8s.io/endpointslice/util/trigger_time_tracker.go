@@ -99,18 +99,23 @@ func (t *TriggerTimeTracker) ComputeEndpointLastChangeTriggerTime(
 
 	// minChangedTriggerTime is the min trigger time of all trigger times that
 	// have changed since the last sync.
+	// 全局的minChangedTriggerTime
 	var minChangedTriggerTime time.Time
 	podTriggerTimes := make(map[string]time.Time)
 	for _, pod := range pods {
+		//podTriggerTime 是go client 记录的 pod last 变更时间
 		if podTriggerTime := getPodTriggerTime(pod); !podTriggerTime.IsZero() {
 			podTriggerTimes[pod.Name] = podTriggerTime
+			//如果是go client 记录的 pod last 变更时间晚于TriggerTimeTracker记录的更新时间
 			if podTriggerTime.After(state.lastPodTriggerTimes[pod.Name]) {
 				// Pod trigger time has changed since the last sync, update minChangedTriggerTime.
+				// 选一个最靠前的时间
 				minChangedTriggerTime = min(minChangedTriggerTime, podTriggerTime)
 			}
 		}
 	}
 	serviceTriggerTime := getServiceTriggerTime(service)
+	// serviceTriggerTime 比 TriggerTimeTracker 记录的 service 更新时间大
 	if serviceTriggerTime.After(state.lastServiceTriggerTime) {
 		// Service trigger time has changed since the last sync, update minChangedTriggerTime.
 		minChangedTriggerTime = min(minChangedTriggerTime, serviceTriggerTime)

@@ -61,6 +61,8 @@ type reconciler struct {
 // reconcile takes an Endpoints resource and ensures that corresponding
 // EndpointSlices exist. It creates, updates, or deletes EndpointSlices to
 // ensure the desired set of addresses are represented by EndpointSlices.
+// 处理一个 Endpoints 资源，并确保与之对应的 EndpointSlices 存在。
+// 具体地，它负责根据 Endpoints 中的地址信息来创建、更新或删除 EndpointSlices，以确保 EndpointSlices 反映出所需的一组地址。
 func (r *reconciler) reconcile(logger klog.Logger, endpoints *corev1.Endpoints, existingSlices []*discovery.EndpointSlice) error {
 	// Calculate desired state.
 	d := newDesiredCalc()
@@ -69,6 +71,10 @@ func (r *reconciler) reconcile(logger klog.Logger, endpoints *corev1.Endpoints, 
 	addressesSkipped := 0
 
 	// canonicalize the Endpoints subsets before processing them
+	// 获取到endpoint 的 subsets：
+	//    Addresses         []EndpointAddress `json:"addresses,omitempty" protobuf:"bytes,1,rep,name=addresses"`
+	//    NotReadyAddresses []EndpointAddress `json:"notReadyAddresses,omitempty" protobuf:"bytes,2,rep,name=notReadyAddresses"`
+	//    Ports             []EndpointPort    `json:"ports,omitempty" protobuf:"bytes,3,rep,name=ports"
 	subsets := endpointsv1.RepackSubsets(endpoints.Subsets)
 	for _, subset := range subsets {
 		multiKey := d.initPorts(subset.Ports)

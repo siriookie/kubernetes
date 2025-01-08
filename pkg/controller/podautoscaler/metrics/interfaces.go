@@ -41,6 +41,8 @@ type MetricsClient interface {
 	// GetResourceMetric gets the given resource metric (and an associated oldest timestamp)
 	// for the specified named container in all pods matching the specified selector in the given namespace and when
 	// the container is an empty string it returns the sum of all the container metrics.
+	// GetResourceMetric 获取指定资源的指标数据（比如 CPU、内存），以及一个最老的时间戳。
+	//它适用于给定的命名空间（namespace），根据传入的标签选择器（selector）筛选 Pod，并且可以选择获取特定容器的资源指标。如果未指定容器，则返回 Pod 中所有容器的资源指标总和。
 	GetResourceMetric(ctx context.Context, resource v1.ResourceName, namespace string, selector labels.Selector, container string) (PodMetricsInfo, time.Time, error)
 
 	// GetRawMetric gets the given metric (and an associated oldest timestamp)

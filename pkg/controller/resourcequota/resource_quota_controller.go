@@ -85,8 +85,10 @@ type Controller struct {
 	// A list of functions that return true when their caches have synced
 	informerSyncedFuncs []cache.InformerSynced
 	// ResourceQuota objects that need to be synchronized
+	//需要同步的ResourceQuota对象
 	queue workqueue.TypedRateLimitingInterface[string]
 	// missingUsageQueue holds objects that are missing the initial usage information
+	//missingUsage队列保存缺少初始使用信息的对象
 	missingUsageQueue workqueue.TypedRateLimitingInterface[string]
 	// To allow injection of syncUsage for testing.
 	syncHandler func(ctx context.Context, key string) error
@@ -139,6 +141,8 @@ func NewController(ctx context.Context, options *ControllerOptions) (*Controller
 				// that cannot be backed by a cache and result in a full query of a namespace's content, we do not
 				// want to pay the price on spurious status updates.  As a result, we have a separate routine that is
 				// responsible for enqueue of all resource quotas when doing a full resync (enqueueAll)
+				// 这段代码的核心是监听 ResourceQuota 的更新事件，但仅对配额声明部分（Spec.Hard）的变化感兴趣，
+				// 忽略状态（Status）的变化，从而减少不必要的处理开销，提高控制器的效率和性能。
 				oldResourceQuota := old.(*v1.ResourceQuota)
 				curResourceQuota := cur.(*v1.ResourceQuota)
 				if quota.Equals(oldResourceQuota.Spec.Hard, curResourceQuota.Spec.Hard) {
@@ -149,6 +153,9 @@ func NewController(ctx context.Context, options *ControllerOptions) (*Controller
 			// This will enter the sync loop and no-op, because the controller has been deleted from the store.
 			// Note that deleting a controller immediately after scaling it to 0 will not work. The recommended
 			// way of achieving this is by performing a `stop` operation on the controller.
+			// 这段代码会进入同步循环并执行“无操作”，因为控制器已经从存储中被删除。
+			//注意，**在将控制器缩放为 0 后立即删除它将无法生效**。
+			//推荐的方式是先对控制器执行一次 `stop` 操作来实现这一点。
 			DeleteFunc: func(obj interface{}) {
 				rq.enqueueResourceQuota(logger, obj)
 			},
@@ -229,14 +236,20 @@ func (rq *Controller) addQuota(logger klog.Logger, obj interface{}) {
 	resourceQuota := obj.(*v1.ResourceQuota)
 
 	// if we declared an intent that is not yet captured in status (prioritize it)
+	// 如果 yaml 中的 sepc 和 status 的 Hard 不一致 则优先处理
 	if !apiequality.Semantic.DeepEqual(resourceQuota.Spec.Hard, resourceQuota.Status.Hard) {
 		rq.missingUsageQueue.Add(key)
 		return
 	}
 
 	// if we declared a constraint that has no usage (which this controller can calculate, prioritize it)
+	//  hard:
+	//      cpu: "1000"
+	//      memory: 200Gi
+	//      pods: "10"
 	for constraint := range resourceQuota.Status.Hard {
 		if _, usageFound := resourceQuota.Status.Used[constraint]; !usageFound {
+			// 如果 Status.Used 中缺少某个 constraint（即 usageFound 为 false），说明系统没有为该配额声明生成实际使用记录。
 			matchedResources := []v1.ResourceName{constraint}
 			for _, evaluator := range rq.registry.List() {
 				if intersection := evaluator.MatchingResources(matchedResources); len(intersection) > 0 {

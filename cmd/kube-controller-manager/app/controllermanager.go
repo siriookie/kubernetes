@@ -495,7 +495,6 @@ func ControllersDisabledByDefault() []string {
 func NewControllerDescriptors() map[string]*ControllerDescriptor {
 	controllers := map[string]*ControllerDescriptor{}
 	aliases := sets.NewString()
-
 	// All the controllers must fulfil common constraints, or else we will explode.
 	register := func(controllerDesc *ControllerDescriptor) {
 		if controllerDesc == nil {
@@ -528,53 +527,57 @@ func NewControllerDescriptors() map[string]*ControllerDescriptor {
 	// The only known special case is the ServiceAccountTokenController which *must* be started
 	// first to ensure that the SA tokens for future controllers will exist. Think very carefully before adding new
 	// special controllers.
-	register(newServiceAccountTokenControllerDescriptor(nil))
+	register(newServiceAccountTokenControllerDescriptor(nil)) //  done
 
-	register(newEndpointsControllerDescriptor())
-	register(newEndpointSliceControllerDescriptor())
-	register(newEndpointSliceMirroringControllerDescriptor())
-	register(newReplicationControllerDescriptor())
-	register(newPodGarbageCollectorControllerDescriptor())
-	register(newResourceQuotaControllerDescriptor())
-	register(newNamespaceControllerDescriptor())
-	register(newServiceAccountControllerDescriptor())
-	register(newGarbageCollectorControllerDescriptor())
-	register(newDaemonSetControllerDescriptor())
-	register(newJobControllerDescriptor())
-	register(newDeploymentControllerDescriptor())
-	register(newReplicaSetControllerDescriptor())
-	register(newHorizontalPodAutoscalerControllerDescriptor())
-	register(newDisruptionControllerDescriptor())
-	register(newStatefulSetControllerDescriptor())
-	register(newCronJobControllerDescriptor())
-	register(newCertificateSigningRequestSigningControllerDescriptor())
-	register(newCertificateSigningRequestApprovingControllerDescriptor())
-	register(newCertificateSigningRequestCleanerControllerDescriptor())
-	register(newTTLControllerDescriptor())
-	register(newBootstrapSignerControllerDescriptor())
-	register(newTokenCleanerControllerDescriptor())
-	register(newNodeIpamControllerDescriptor())
-	register(newNodeLifecycleControllerDescriptor())
+	register(newEndpointsControllerDescriptor())                          // done
+	register(newEndpointSliceControllerDescriptor())                      // done
+	register(newEndpointSliceMirroringControllerDescriptor())             //done
+	register(newReplicationControllerDescriptor())                        //过时
+	register(newPodGarbageCollectorControllerDescriptor())                // todo
+	register(newResourceQuotaControllerDescriptor())                      //todo
+	register(newNamespaceControllerDescriptor())                          // done Namespace Controller 的主要职责是在用户删除某个命名空间（Namespace）时，自动清理该命名空间中的所有资源，然后再删除命名空间对象本身。
+	register(newServiceAccountControllerDescriptor())                     // done 确保每个 namespace 下都有 default service account
+	register(newGarbageCollectorControllerDescriptor())                   // todo
+	register(newDaemonSetControllerDescriptor())                          // done
+	register(newJobControllerDescriptor())                                // todo 看起来有点复杂
+	register(newDeploymentControllerDescriptor())                         // done
+	register(newReplicaSetControllerDescriptor())                         // done
+	register(newHorizontalPodAutoscalerControllerDescriptor())            // done
+	register(newDisruptionControllerDescriptor())                         // done // PDB 主要用于维护操作期间的可用性控制，防止过多的 Pod 同时不可用。
+	register(newStatefulSetControllerDescriptor())                        // done
+	register(newCronJobControllerDescriptor())                            // todo
+	register(newCertificateSigningRequestSigningControllerDescriptor())   //主要职责是处理与证书颁发相关的请求
+	register(newCertificateSigningRequestApprovingControllerDescriptor()) // 自动或手动审核并批准 Kubernetes 集群中的证书签发请求（Certificate Signing Requests，简称 CSR）
+	register(newCertificateSigningRequestCleanerControllerDescriptor())   // 清理过期或已完成状态的 CSR 对象，以避免占用 API Server 和 etcd 的存储空间。
+	register(newTTLControllerDescriptor())                                // done  TTLController 是订阅node 设置的ObjectTTLAnnotationKey （Kubernetes 中用于指定缓存对象（例如 Secret 或 ConfigMap）在节点上的存储时间的建议），有变化就去更新
+	register(newBootstrapSignerControllerDescriptor())                    // done 监听 kube-system 下的系统的 config map和 secret 的变更
+	register(newTokenCleanerControllerDescriptor())                       // done 清除 kube-system 中过期的type 是bootstrap.kubernetes.io/token的 secret
+	register(newNodeIpamControllerDescriptor())                           // done 负责在集群中分配 ip 的
+	register(newNodeLifecycleControllerDescriptor())                      // done  监听 pod 和 node，负责在node 不 ready 的时候及时的去更新 node 的 taint 字段让pod 不能在上面调度
 
+	// 三个 cloud provider 的代码是空的
 	register(newServiceLBControllerDescriptor())          // cloud provider controller
 	register(newNodeRouteControllerDescriptor())          // cloud provider controller
 	register(newCloudNodeLifecycleControllerDescriptor()) // cloud provider controller
 	// TODO: persistent volume controllers into the IncludeCloudLoops only set as a cloud provider controller.
 
-	register(newPersistentVolumeBinderControllerDescriptor())
-	register(newPersistentVolumeAttachDetachControllerDescriptor())
-	register(newPersistentVolumeExpanderControllerDescriptor())
-	register(newClusterRoleAggregrationControllerDescriptor())
-	register(newPersistentVolumeClaimProtectionControllerDescriptor())
-	register(newPersistentVolumeProtectionControllerDescriptor())
-	register(newVolumeAttributesClassProtectionControllerDescriptor())
-	register(newTTLAfterFinishedControllerDescriptor())
-	register(newRootCACertificatePublisherControllerDescriptor())
-	register(newKubeAPIServerSignerClusterTrustBundledPublisherDescriptor())
-	register(newEphemeralVolumeControllerDescriptor())
+	register(newPersistentVolumeBinderControllerDescriptor())                // done
+	register(newPersistentVolumeAttachDetachControllerDescriptor())          // todo
+	register(newPersistentVolumeExpanderControllerDescriptor())              // todo
+	register(newClusterRoleAggregrationControllerDescriptor())               // done
+	register(newPersistentVolumeClaimProtectionControllerDescriptor())       // done
+	register(newPersistentVolumeProtectionControllerDescriptor())            // done
+	register(newVolumeAttributesClassProtectionControllerDescriptor())       // done
+	register(newTTLAfterFinishedControllerDescriptor())                      // done
+	register(newRootCACertificatePublisherControllerDescriptor())            //done
+	register(newKubeAPIServerSignerClusterTrustBundledPublisherDescriptor()) // not need
+	register(newEphemeralVolumeControllerDescriptor())                       // done
 
 	// feature gated
-	register(newStorageVersionGarbageCollectorControllerDescriptor())
+	// Feature gated 是 Kubernetes 中的一个术语，意思是某个功能（feature）被限制在特定的环境下或特定版本中，
+	//通常是通过 feature gates 来控制的。简而言之，就是某个功能在 Kubernetes 中默认是禁用的，
+	//只有当你显式启用某个 "feature gate" 时，它才会被启用并生效。
+	register(newStorageVersionGarbageCollectorControllerDescriptor()) // done
 	register(newResourceClaimControllerDescriptor())
 	register(newLegacyServiceAccountTokenCleanerControllerDescriptor())
 	register(newValidatingAdmissionPolicyStatusControllerDescriptor())

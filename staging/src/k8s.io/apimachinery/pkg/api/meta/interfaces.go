@@ -128,6 +128,8 @@ type RESTMapper interface {
 	// RESTMappings returns all resource mappings for the provided group kind if no
 	// version search is provided. Otherwise identifies a preferred resource mapping for
 	// the provided version(s).
+	// 根据给定的 group kind 返回相应的资源映射。如果没有指定版本，它会返回所有资源映射；
+	//如果指定了版本，它将返回首选的资源映射。
 	RESTMappings(gk schema.GroupKind, versions ...string) ([]*RESTMapping, error)
 
 	ResourceSingularizer(resource string) (singular string, err error)

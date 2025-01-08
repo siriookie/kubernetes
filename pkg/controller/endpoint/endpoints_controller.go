@@ -192,6 +192,21 @@ func (e *Controller) Run(ctx context.Context, workers int) {
 
 	go func() {
 		defer utilruntime.HandleCrash()
+		// 检查可能因为重启导致的 endpoint 错误情况，比如 service 删除了但是 endpoint 还在
+		//5. 实际应用场景对比
+		//检查所有 Endpoints 的方法：
+		//列举所有 Endpoints。
+		//检查每个 Endpoint 是否有对应 Service 存在。
+		//若 Service 不存在，将 Endpoint 加入队列，后续进行删除。
+		//检查所有 Services 的方法：
+		//列举所有 Services。
+		//遍历每个 Service 下的 Pod，并与 Endpoints 的成员进行比对。
+		//检查是否缺少或多余 Pod，进行修复。
+		//对比可以发现：
+		//
+		//检查所有 Endpoints 需要遍历所有 Endpoints 一次并进行简单匹配（处理复杂度低）。
+		//检查所有 Services 需要遍历 Service 再检查 Pods，逻辑更复杂且潜在操作更多。
+		// 这里采用比较简单的方法
 		e.checkLeftoverEndpoints()
 	}()
 
@@ -377,6 +392,7 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 			return err
 		}
 
+		// 如果是没找到这个 endpoint 对应的 service ，那么需要去把这个 endpoint 给删除掉
 		// Delete the corresponding endpoint, as the service has been deleted.
 		// TODO: Please note that this will delete an endpoint when a
 		// service is deleted. However, if we're down at the time when
@@ -391,6 +407,9 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 		return nil
 	}
 
+	// 如果找到了 service
+
+	//如果 type 是 ExternalName 那么不需要做任何处理，因为 ExternalName 只是一个 DNS 地址，不应该再根据 selector 去建一个新的 endpoint
 	if service.Spec.Type == v1.ServiceTypeExternalName {
 		// services with Type ExternalName receive no endpoints from this controller;
 		// Ref: https://issues.k8s.io/105986
@@ -414,21 +433,24 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 	// We call ComputeEndpointLastChangeTriggerTime here to make sure that the
 	// state of the trigger time tracker gets updated even if the sync turns out
 	// to be no-op and we don't update the endpoints object.
+	//计算指定服务的 endpoints 最后一次变更触发时间。
 	endpointsLastChangeTriggerTime := e.triggerTimeTracker.
 		ComputeEndpointLastChangeTriggerTime(namespace, service, pods)
 
 	subsets := []v1.EndpointSubset{}
 	var totalReadyEps int
 	var totalNotReadyEps int
-
+	// 遍历这个 endpoint 对应的 service 能管理的所有 pod
+	// 整理出这个 service 所有的 endpoint 列表放到 subsets 中
 	for _, pod := range pods {
 		if !endpointsliceutil.ShouldPodBeInEndpoints(pod, service.Spec.PublishNotReadyAddresses) {
 			logger.V(5).Info("Pod is not included on endpoints for Service", "pod", klog.KObj(pod), "service", klog.KObj(service))
 			continue
 		}
-
+		// pod 状态是 running，或者是service 的publishNotReadyAddresses=true
 		ep, err := podToEndpointAddressForService(service, pod)
 		if err != nil {
+			// 没拿到 pod 的 endpoint，continue
 			// this will happen, if the cluster runs with some nodes configured as dual stack and some as not
 			// such as the case of an upgrade..
 			logger.V(2).Info("Failed to find endpoint for service with ClusterIP on pod with error", "service", klog.KObj(service), "clusterIP", service.Spec.ClusterIP, "pod", klog.KObj(pod), "error", err)
@@ -441,12 +463,16 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 		}
 
 		// Allow headless service not to have ports.
+		// 直连 Pod: 客户端可以直接通过 Pod 的 IP 地址进行通信，因此不需要定义服务的端口。
+		//用户可以直接使用 Pod 的端口进行访问。
 		if len(service.Spec.Ports) == 0 {
 			if service.Spec.ClusterIP == api.ClusterIPNone {
+				// headless 的 service并且没有 port 的情况，传 pod 和该 pod 的 endpoint 和所有的 endpoints 进去
 				subsets, totalReadyEps, totalNotReadyEps = addEndpointSubset(logger, subsets, pod, epa, nil, service.Spec.PublishNotReadyAddresses)
 				// No need to repack subsets for headless service without ports.
 			}
 		} else {
+			// 如果 service 有 ports ，可能是 headless 的或者是 normal 的
 			for i := range service.Spec.Ports {
 				servicePort := &service.Spec.Ports[i]
 				portNum, err := podutil.FindPort(pod, servicePort)
@@ -463,9 +489,35 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 			}
 		}
 	}
-	subsets = endpoints.RepackSubsets(subsets)
+	//格式formatter：
+	// 生成这样的格式：
+	//apiVersion: v1
+	//kind: Endpoints
+	//metadata:
+	//  name: my-service
+	//subsets:
+	//  - addresses:
+	//      - ip: 192.168.1.10
+	//        targetRef:
+	//          kind: Pod
+	//          name: my-pod-1
+	//          namespace: default
+	//      - ip: 192.168.1.11
+	//        targetRef:
+	//          kind: Pod
+	//          name: my-pod-2
+	//          namespace: default
+	//    ports:
+	//      - port: 80
+	//        name: http
+	//      - port: 443
+	//        name: https
+	//最后一步根据addresses、notReadyAddresses根据排序，如果 ip 排不出序，就通过 uid 排序
+	//最后根据 ports 的 md5来排序
+	subsets = endpoints.RepackSubsets(subsets) //到这里，构建新的 endpoints 的步骤已经完成了
 
 	// See if there's actually an update here.
+	// 查出这个 service的所有 endpoints
 	currentEndpoints, err := e.endpointsLister.Endpoints(service.Namespace).Get(service.Name)
 	if err != nil {
 		if !errors.IsNotFound(err) {
@@ -477,10 +529,11 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 				Labels: service.Labels,
 			},
 		}
-	} else if e.staleEndpointsTracker.IsStale(currentEndpoints) {
+	} else if e.staleEndpointsTracker.IsStale(currentEndpoints) /* update 的时候会返回一个最新的 版本号存在内存中，可能这里 lister 中的版本并没有及时得到更新*/ {
 		return fmt.Errorf("endpoints informer cache is out of date, resource version %s already processed for endpoints %s", currentEndpoints.ResourceVersion, key)
 	}
 
+	//判断是否是新建的endpoints
 	createEndpoints := len(currentEndpoints.ResourceVersion) == 0
 
 	// Compare the sorted subsets and labels
@@ -494,13 +547,14 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 	}
 	// When comparing the subsets, we ignore the difference in ResourceVersion of Pod to avoid unnecessary Endpoints
 	// updates caused by Pod updates that we don't care, e.g. annotation update.
-	if !createEndpoints &&
-		endpointSubsetsEqualIgnoreResourceVersion(currentEndpoints.Subsets, subsets) &&
-		apiequality.Semantic.DeepEqual(compareLabels, service.Labels) &&
-		capacityAnnotationSetCorrectly(currentEndpoints.Annotations, currentEndpoints.Subsets) {
+	if !createEndpoints /* 不是新增的 endpoints*/ &&
+		endpointSubsetsEqualIgnoreResourceVersion(currentEndpoints.Subsets, subsets) /* 新的 subsets 和老的 subsets  deep equal*/ &&
+		apiequality.Semantic.DeepEqual(compareLabels, service.Labels) /* 新的 labels 和老的 labels  deep equal*/ &&
+		capacityAnnotationSetCorrectly(currentEndpoints.Annotations, currentEndpoints.Subsets) /* 要看这个单个的 endpoints 有没有超过 1000个地址*/ {
 		logger.V(5).Info("endpoints are equal, skipping update", "service", klog.KObj(service))
 		return nil
 	}
+	// currentEndpoints和上面计算出来的 endpoints 有不一样的地方
 	newEndpoints := currentEndpoints.DeepCopy()
 	newEndpoints.Subsets = subsets
 	newEndpoints.Labels = service.Labels
@@ -514,7 +568,8 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 	} else { // No new trigger time, clear the annotation.
 		delete(newEndpoints.Annotations, v1.EndpointsLastChangeTriggerTime)
 	}
-
+	//如果超过 10000个 endpoints ，截断 endpoints，先截断 notReady 的，再截Ready 的
+	// 再加上注释，反之 delete 注释
 	if truncateEndpoints(newEndpoints) {
 		newEndpoints.Annotations[v1.EndpointsOverCapacity] = truncated
 	} else {
@@ -524,7 +579,7 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 	if newEndpoints.Labels == nil {
 		newEndpoints.Labels = make(map[string]string)
 	}
-
+	//判断是不是 headless service，是的话加上注释，不是的话删除注释
 	if !helper.IsServiceIPSet(service) {
 		newEndpoints.Labels = utillabels.CloneAndAddLabel(newEndpoints.Labels, v1.IsHeadlessService, "")
 	} else {
@@ -533,6 +588,7 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 
 	logger.V(4).Info("Update endpoints", "service", klog.KObj(service), "readyEndpoints", totalReadyEps, "notreadyEndpoints", totalNotReadyEps)
 	var updatedEndpoints *v1.Endpoints
+	// 更新或者新建去
 	if createEndpoints {
 		// No previous endpoints, create them
 		_, err = e.client.CoreV1().Endpoints(service.Namespace).Create(ctx, newEndpoints, metav1.CreateOptions{})
@@ -546,6 +602,10 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 			// 1. namespace is terminating, endpoint creation is not allowed by default.
 			// 2. policy is misconfigured, in which case no service would function anywhere.
 			// Given the frequency of 1, we log at a lower level.
+			// 请求被禁止主要有两个原因：
+			// 1. 命名空间正在终止，默认情况下不允许创建端点。
+			// 2. 策略配置错误，这种情况下，任何服务都无法正常工作。
+			// 鉴于发生的频率较低，我们以较低的日志级别记录。
 			logger.V(5).Info("Forbidden from creating endpoints", "error", err)
 
 			// If the namespace is terminating, creates will continue to fail. Simply drop the item.
@@ -568,6 +628,7 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 	// there are some operations (webhooks, truncated endpoints, ...) that can potentially cause endpoints updates became noop
 	// and return the same resourceVersion.
 	// Ref: https://issues.k8s.io/127370 , https://issues.k8s.io/126578
+	// 判断当前的版本的 endpoints 是否是过时的
 	if updatedEndpoints != nil && updatedEndpoints.ResourceVersion != currentEndpoints.ResourceVersion {
 		e.staleEndpointsTracker.Stale(currentEndpoints)
 	}
@@ -616,6 +677,7 @@ func addEndpointSubset(logger klog.Logger, subsets []v1.EndpointSubset, pod *v1.
 	if epp != nil {
 		ports = append(ports, *epp)
 	}
+	// service 容忍暂未就绪的 pod 或者 已经有 ready 的 pod
 	if tolerateUnreadyEndpoints || podutil.IsPodReady(pod) {
 		subsets = append(subsets, v1.EndpointSubset{
 			Addresses: []v1.EndpointAddress{epa},

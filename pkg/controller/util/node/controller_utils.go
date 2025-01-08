@@ -197,7 +197,7 @@ func SwapNodeControllerTaint(ctx context.Context, kubeClient clientset.Interface
 		now := metav1.Now()
 		taintToAdd.TimeAdded = &now
 	}
-
+	//把新的 taint 添加上去
 	err := controller.AddOrUpdateTaintOnNode(ctx, kubeClient, node.Name, taintsToAdd...)
 	if err != nil {
 		utilruntime.HandleError(
@@ -209,7 +209,7 @@ func SwapNodeControllerTaint(ctx context.Context, kubeClient clientset.Interface
 		return false
 	}
 	logger.V(4).Info("Added taint to node", "taint", taintsToAdd, "node", klog.KRef("", node.Name))
-
+	// 把需要移除的 taint 移除
 	err = controller.RemoveTaintOffNode(ctx, kubeClient, node.Name, node, taintsToRemove...)
 	if err != nil {
 		utilruntime.HandleError(

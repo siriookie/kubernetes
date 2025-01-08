@@ -223,6 +223,8 @@ func ReplaceDaemonSetPodNodeNameNodeAffinity(affinity *v1.Affinity, nodename str
 // GetTargetNodeName get the target node name of DaemonSet pods. If `.spec.NodeName` is not empty (nil),
 // return `.spec.NodeName`; otherwise, retrieve node name of pending pods from NodeAffinity. Return error
 // if failed to retrieve node name from `.spec.NodeName` and NodeAffinity.
+// 先尝试获取pod.Spec.NodeName，如果为空，
+// 则尝试从pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms.MatchFields.Key==metav1.ObjectNameField
 func GetTargetNodeName(pod *v1.Pod) (string, error) {
 	if len(pod.Spec.NodeName) != 0 {
 		return pod.Spec.NodeName, nil

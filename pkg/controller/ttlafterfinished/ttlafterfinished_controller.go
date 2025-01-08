@@ -196,6 +196,13 @@ func (tc *Controller) handleErr(err error, key string) {
 // its TTL hasn't expired, it will be added to the queue after the TTL is expected
 // to expire.
 // This function is not meant to be invoked concurrently with the same key.
+// 检查 Job 的状态和 TTL：该函数会检查 Job 的当前状态以及其 TTL（Time To Live，生存时间）设置。
+//
+// 如果 Job 已经完成并且它的 TTL （即从 Job 完成开始的过期时间）已经过期，则会删除这个 Job。
+// 如果 Job 还没有完成，或者它的 TTL 尚未到期，则会将该 Job 加入到队列中，并且在 TTL 到期时再次检查。
+// TTL 到期后删除 Job：Job 完成后，它的生命周期会受到 TTL 的控制。TTL 是指从 Job 完成开始到被自动删除的时间。Job 会在 TTL 到期时被删除。如果 Job 完成得早，而 TTL 设置较长，它会继续保留在集群中直到 TTL 到期。
+//
+// 防止并发执行：这段注释特别强调，该函数不能同时并发执行。也就是说，对于同一个 Job 的处理，不能同时由多个进程或线程来执行。否则可能会导致竞态条件（race condition）或者重复处理的问题。
 func (tc *Controller) processJob(ctx context.Context, key string) error {
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
@@ -204,17 +211,15 @@ func (tc *Controller) processJob(ctx context.Context, key string) error {
 
 	// Ignore the Jobs that are already deleted or being deleted, or the ones that don't need clean up.
 	job, err := tc.jLister.Jobs(namespace).Get(name)
-
-	logger := klog.FromContext(ctx)
-	logger.V(4).Info("Checking if Job is ready for cleanup", "job", klog.KRef(namespace, name))
-
 	if errors.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-
+	logger := klog.FromContext(ctx)
+	logger.V(4).Info("Checking if Job is ready for cleanup", "job", klog.KRef(namespace, name))
+	// 先用缓存里的检查一遍，避免所有的请求都打到api server上
 	if expiredAt, err := tc.processTTL(logger, job); err != nil {
 		return err
 	} else if expiredAt == nil {
@@ -225,6 +230,10 @@ func (tc *Controller) processJob(ctx context.Context, key string) error {
 	// Before deleting the Job, do a final sanity check.
 	// If TTL is modified before we do this check, we cannot be sure if the TTL truly expires.
 	// The latest Job may have a different UID, but it's fine because the checks will be run again.
+	// 假设该 Job 的 TTL 已经过期，但 Job 的 TTL 可能已经过时。
+	// 在删除 Job 之前，进行最后的合理性检查。
+	// 如果在执行此检查之前 TTL 被修改，我们不能确定 TTL 是否真正过期。
+	// 最新的 Job 可能具有不同的 UID，但没关系，因为检查会重新运行。
 	fresh, err := tc.client.BatchV1().Jobs(namespace).Get(ctx, name, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
 		return nil
@@ -269,19 +278,22 @@ func (tc *Controller) processTTL(logger klog.Logger, job *batch.Job) (expiredAt 
 	}
 
 	// TTL has expired
+	// job已经失效了
 	if *t <= 0 {
 		return e, nil
 	}
-
+	// 没失效，等待到期的时间，添加到队列中
 	tc.enqueueAfter(job, *t)
 	return nil, nil
 }
 
 // needsCleanup checks whether a Job has finished and has a TTL set.
 func needsCleanup(j *batch.Job) bool {
+	// 如果设置了需要在任务完成后自动删除job并且任务已经完成
 	return j.Spec.TTLSecondsAfterFinished != nil && jobutil.IsJobFinished(j)
 }
 
+// 返回job结束的时间和job应该被删除的时间
 func getFinishAndExpireTime(j *batch.Job) (*time.Time, *time.Time, error) {
 	if !needsCleanup(j) {
 		return nil, nil, fmt.Errorf("job %s/%s should not be cleaned up", j.Namespace, j.Name)
@@ -302,6 +314,7 @@ func timeLeft(logger klog.Logger, j *batch.Job, since *time.Time) (*time.Duratio
 	}
 
 	if finishAt.After(*since) {
+		// Time skew（时间偏差）指的是两台计算机或系统之间的时间不一致或不同步的现象。具体来说，时间偏差是指系统时间（通常由操作系统维护的时钟）与真实世界时间之间的差异，或是不同系统之间时钟的不一致。
 		logger.Info("Warning: Found Job finished in the future. This is likely due to time skew in the cluster. Job cleanup will be deferred.", "job", klog.KObj(j))
 	}
 	remaining := expireAt.Sub(*since)
@@ -310,6 +323,7 @@ func timeLeft(logger klog.Logger, j *batch.Job, since *time.Time) (*time.Duratio
 }
 
 // jobFinishTime takes an already finished Job and returns the time it finishes.
+// 返回job结束的时间
 func jobFinishTime(finishedJob *batch.Job) (metav1.Time, error) {
 	for _, c := range finishedJob.Status.Conditions {
 		if (c.Type == batch.JobComplete || c.Type == batch.JobFailed) && c.Status == v1.ConditionTrue {

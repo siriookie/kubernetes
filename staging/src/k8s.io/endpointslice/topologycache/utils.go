@@ -224,6 +224,19 @@ func getHintsByZone(slice *discovery.EndpointSlice, allocatedHintsByZone Endpoin
 
 // serviceOverloaded returns true if the Service has an insufficient amount of
 // endpoints for any zone.
+// 服务是否过载判断：
+//
+// 该函数判断某个服务在某些区域是否因为端点不足而过载。它接收一个 EndpointZoneInfo 和一个区域的 CPU 使用比例（zoneRatios）。
+// 计算总端点数：
+//
+// 先计算该服务在所有区域的端点总数（totalEndpoints）。ezi 是一个区域与端点数的映射，循环计算总端点数。
+// 检查每个区域：
+//
+// 对每个区域，获取该区域的端点数，如果某个区域没有对应的端点数（ezi[zone] 不存在），则返回过载（true）。
+// 如果该区域有端点数，则判断它是否满足该区域的最小端点要求。最小端点数是根据总端点数和该区域的 CPU 比例以及一个 overloadThreshold 来计算的。使用 math.Ceil() 确保最小端点数是向上取整。
+// 返回过载状态：
+//
+// 如果发现任何区域不满足最小端点数要求，或者根本没有该区域的端点数，都会返回 true，表示服务过载。否则，返回 false，表示服务没有过载。
 func serviceOverloaded(ezi EndpointZoneInfo, zoneRatios map[string]float64) bool {
 	if len(ezi) == 0 {
 		return false

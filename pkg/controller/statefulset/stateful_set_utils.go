@@ -103,6 +103,7 @@ func getEndOrdinal(set *apps.StatefulSet) int {
 
 // podInOrdinalRange returns true if the pod ordinal is within the allowed
 // range of ordinals that this StatefulSet is set to control.
+// 算出 pod 的序号，stateful set 每个 pod 都有固定的序号
 func podInOrdinalRange(pod *v1.Pod, set *apps.StatefulSet) bool {
 	ordinal := getOrdinal(pod)
 	return ordinal >= getStartOrdinal(set) && ordinal <= getEndOrdinal(set)
@@ -530,6 +531,9 @@ func newStatefulSetPod(set *apps.StatefulSet, ordinal int) *v1.Pod {
 // current revision. updateSet is the representation of the set at the updateRevision. currentRevision is the name of
 // the current revision. updateRevision is the name of the update revision. ordinal is the ordinal of the Pod. If the
 // returned error is nil, the returned Pod is valid.
+// 根据当前和更新的StatefulSet以及指定的序号（ordinal）创建一个新的Pod。具体逻辑如下：
+// 检查当前StatefulSet的更新策略是否为滚动更新，并且满足特定条件时，使用当前的StatefulSet创建Pod并设置修订版本。
+// 否则，使用更新后的StatefulSet创建Pod并设置修订版本。
 func newVersionedStatefulSetPod(currentSet, updateSet *apps.StatefulSet, currentRevision, updateRevision string, ordinal int) *v1.Pod {
 	if currentSet.Spec.UpdateStrategy.Type == apps.RollingUpdateStatefulSetStrategyType &&
 		(currentSet.Spec.UpdateStrategy.RollingUpdate == nil && ordinal < (getStartOrdinal(currentSet)+int(currentSet.Status.CurrentReplicas))) ||

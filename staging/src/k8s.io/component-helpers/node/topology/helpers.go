@@ -54,5 +54,8 @@ func GetZoneKey(node *v1.Node) string {
 	// We include the null character just in case region or failureDomain has a colon
 	// (We do assume there's no null characters in a region or failureDomain)
 	// As a nice side-benefit, the null character is not printed by fmt.Print or glog
+	// 我们包含空字符，以防区域 (region) 或故障域 (failureDomain) 中包含冒号 (:)。
+	// （我们假设区域或故障域中没有空字符。）
+	// 作为一个额外的好处，空字符不会被 fmt.Print 或 glog 打印出来。
 	return region + ":\x00:" + zone
 }

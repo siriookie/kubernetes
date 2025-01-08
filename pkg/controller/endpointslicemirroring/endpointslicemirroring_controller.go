@@ -129,6 +129,7 @@ func NewController(ctx context.Context, endpointsInformer coreinformers.Endpoint
 
 	c.serviceLister = serviceInformer.Lister()
 	c.servicesSynced = serviceInformer.Informer().HasSynced
+	// endpoints 的 name 和 service 的 name 是一样的
 	serviceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.onServiceAdd,
 		UpdateFunc: c.onServiceUpdate,
@@ -292,7 +293,7 @@ func (c *Controller) syncEndpoints(logger klog.Logger, key string) error {
 	if err != nil {
 		return err
 	}
-
+	// 根据 name 拿到 endpoints
 	endpoints, err := c.endpointsLister.Endpoints(namespace).Get(name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -302,13 +303,13 @@ func (c *Controller) syncEndpoints(logger klog.Logger, key string) error {
 		}
 		return err
 	}
-
+	// 判断是不是不需要进行 mirror 的 endpoint
 	if !c.shouldMirror(endpoints) {
 		logger.V(4).Info("Endpoints should not be mirrored, cleaning up any mirrored EndpointSlices", "endpoints", klog.KRef(namespace, name))
 		c.endpointSliceTracker.DeleteService(namespace, name)
 		return c.deleteMirroredSlices(namespace, name)
 	}
-
+	//根据 name 拿到 service
 	svc, err := c.serviceLister.Services(namespace).Get(name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -320,17 +321,27 @@ func (c *Controller) syncEndpoints(logger klog.Logger, key string) error {
 	}
 
 	// If a selector is specified, clean up any mirrored slices.
+	// 跳过Selector不为空的 service
 	if svc.Spec.Selector != nil {
 		logger.V(4).Info("Service now has selector, cleaning up any mirrored EndpointSlices", "service", klog.KRef(namespace, name))
 		c.endpointSliceTracker.DeleteService(namespace, name)
 		return c.deleteMirroredSlices(namespace, name)
 	}
+	//只剩下了
+	//没有 Selector 的 Service：
+	//
+	//对于那些没有 selector 的 Service（例如 ClusterIP 类型的 Service），它们不会使用 Kubernetes 的默认自动发现机制。EndpointSliceMirroring 控制器需要手动管理这些服务的 EndpointSlices，以便将其镜像到另一个集群或者与外部资源同步。
+	//ExternalName 类型的 Service：
+	//
+	//对于 ExternalName 类型的 Service，该类型的服务没有真正的后端 Pod。它只是将流量重定向到外部的主机或服务。在这种情况下，也需要镜像到 EndpointSlice，因为没有 Pod，Endpoint 列表由外部资源直接指定。
 
+	//根据 name 找到 endpointSlices
 	endpointSlices, err := endpointSlicesMirroredForService(c.endpointSliceLister, namespace, name)
 	if err != nil {
 		return err
 	}
 
+	// 判断endpointSlices是否过时
 	if c.endpointSliceTracker.StaleSlices(svc, endpointSlices) {
 		return endpointslicepkg.NewStaleInformerCache("EndpointSlice informer cache is out of date")
 	}

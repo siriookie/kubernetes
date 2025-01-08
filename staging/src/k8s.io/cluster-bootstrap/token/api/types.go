@@ -30,6 +30,9 @@ const (
 	// SecretTypeBootstrapToken is used during the automated bootstrap process (first
 	// implemented by kubeadm). It stores tokens that are used to sign well known
 	// ConfigMaps. They may also eventually be used for authentication.
+	// 节点注册令牌（Bootstrap Token）
+	//当一个新节点（通常是通过 kubeadm join 命令）试图加入集群时，需要一种方式证明自己的合法性。
+	//这个 Secret 提供了一个时间受限的、唯一的注册令牌，用于节点与集群的 API Server 初次通信。
 	SecretTypeBootstrapToken v1.SecretType = "bootstrap.kubernetes.io/token"
 
 	// BootstrapTokenIDKey is the id of this token. This can be transmitted in the

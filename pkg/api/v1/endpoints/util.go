@@ -56,6 +56,7 @@ func RepackSubsets(subsets []v1.EndpointSubset) []v1.EndpointSubset {
 	keyToAddrReadyMap := map[keyString]addressSet{}
 	addrReadyMapKeyToPorts := map[keyString][]v1.EndpointPort{}
 	for port, addrs := range portToAddrReadyMap {
+		// 根据address和 ready 的信息，hash 出一个 key，并对键内部排序去重了
 		key := keyString(hashAddresses(addrs))
 		keyToAddrReadyMap[key] = addrs
 		if port.Port > 0 { // avoid sentinels
@@ -94,6 +95,7 @@ type addressKey struct {
 
 // mapAddressesByPort adds all ready and not-ready addresses into a map by a single port.
 func mapAddressesByPort(subset *v1.EndpointSubset, port v1.EndpointPort, allAddrs map[addressKey]*v1.EndpointAddress, portToAddrReadyMap map[v1.EndpointPort]addressSet) {
+	// 根绝 address构建一个 map，还根据 port 来构建一个 map
 	for k := range subset.Addresses {
 		mapAddressByPort(&subset.Addresses[k], port, true, allAddrs, portToAddrReadyMap)
 	}
@@ -144,6 +146,16 @@ type addrReady struct {
 	ready bool
 }
 
+// 扁平化地址:
+// 创建一个切片 slice，将 addressSet 中的每个地址和其就绪状态放入一个结构体 addrReady 中。
+// addrReady 通常包含地址以及一个布尔值，指示该地址是否就绪。
+// 排序:
+// 对 slice 进行排序，以确保相同的地址集合在不同调用中产生相同的哈希值。这是因为无序的地址集合可能会导致不同的哈希值。
+// 生成哈希:
+// 使用 MD5 哈希功能创建一个新的哈希器。
+// 调用 hashutil.DeepHashObject，将排序后的切片传入哈希器，以生成哈希值。
+// 返回哈希值:
+// 将哈希值转换为十六进制字符串并返回。
 func hashAddresses(addrs addressSet) string {
 	// Flatten the list of addresses into a string so it can be used as a
 	// map key.  Unfortunately, DeepHashObject is implemented in terms of

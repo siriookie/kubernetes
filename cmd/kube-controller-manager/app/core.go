@@ -90,6 +90,7 @@ func newServiceLBControllerDescriptor() *ControllerDescriptor {
 
 func startServiceLBController(ctx context.Context, controllerContext ControllerContext, controllerName string) (controller.Interface, bool, error) {
 	logger := klog.FromContext(ctx)
+	// logger.Info("警告：已设置服务控制器，但在 kube-controller-manager 中没有可用的云提供商功能 (KEP-2395)。将不会配置服务控制器。")
 	logger.Info("Warning: service-controller is set, but no cloud provider functionality is available in kube-controller-manger (KEP-2395). Will not configure service controller.")
 	return nil, false, nil
 }
@@ -101,6 +102,13 @@ func newNodeIpamControllerDescriptor() *ControllerDescriptor {
 	}
 }
 
+// PAM（IP Address Management，IP 地址管理）是指对网络中的 IP 地址进行规划、分配、管理和监控的过程和工具。它的主要功能包括：
+//
+// IP 地址分配: 管理和分配 IP 地址给网络设备、服务器和其他资源，确保没有重复分配。
+// IP 地址规划: 帮助网络管理员设计和规划 IP 地址空间，以优化网络性能和可扩展性。
+// 地址监控: 监控 IP 地址的使用情况，提供关于哪些地址被使用、哪些地址可用的信息。
+// 集成 DNS 和 DHCP: IPAM 通常与 DNS（域名系统）和 DHCP（动态主机配置协议）集成，提供更全面的网络管理功能。
+// 报告与分析: 提供有关 IP 地址使用情况的报告，帮助管理员做出数据驱动的决策。
 func startNodeIpamController(ctx context.Context, controllerContext ControllerContext, controllerName string) (controller.Interface, bool, error) {
 	var serviceCIDR *net.IPNet
 	var secondaryServiceCIDR *net.IPNet
@@ -173,6 +181,11 @@ func startNodeIpamController(ctx context.Context, controllerContext ControllerCo
 	return nil, true, nil
 }
 
+// 节点状态监控: NodeLifecycleController 监控节点的状态，包括节点是否可用、是否正常运行等。
+// 节点心跳: 通过定期检查节点的健康状况，确保节点在集群中的有效性。如果节点未能在规定时间内发出心跳信号，控制器会将其标记为不可用。
+// 节点维护: 处理节点的添加、删除和更新操作，包括标记节点为“不可调度”或“不可用”。
+// 自动驱逐: 如果节点长时间不可用，NodeLifecycleController 会自动驱逐在该节点上运行的 Pods，将其迁移到其他健康节点上。
+// 节点回收: 处理节点的删除和清理操作，确保在节点被移除后，相关的资源和状态被正确清理。
 func newNodeLifecycleControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.NodeLifecycleController,
@@ -261,6 +274,7 @@ func startNodeRouteController(ctx context.Context, controllerContext ControllerC
 	return nil, false, nil
 }
 
+// PersistentVolumeBinderController 是 Kubernetes 中的一个控制器，主要负责将持久卷（Persistent Volumes，PV）与持久卷声明（Persistent Volume Claims，PVC）进行绑定
 func newPersistentVolumeBinderControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.PersistentVolumeBinderController,
@@ -295,6 +309,19 @@ func startPersistentVolumeBinderController(ctx context.Context, controllerContex
 	return nil, true, nil
 }
 
+// Pod 创建时：
+// 1. Pod 被调度到特定节点
+// 2. AD Controller 检测到 Pod 使用的 PV
+// 3. 触发该 PV 到目标节点的 Attach 操作
+// 4. 等待 Attach 完成
+// 5. 更新 VolumeAttachment 对象状态
+//
+// Pod 删除时：
+// 1. 检测 Pod 删除事件
+// 2. 确认没有其他 Pod 使用该 PV
+// 3. 触发 Detach 操作
+// 4. 等待 Detach 完成
+// 5. 清理 VolumeAttachment 对象
 func newPersistentVolumeAttachDetachControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.PersistentVolumeAttachDetachController,
@@ -371,6 +398,7 @@ func startPersistentVolumeExpanderController(ctx context.Context, controllerCont
 	return nil, true, nil
 }
 
+// 监听pod和pvc，如果类型是Ephemeral volumes （临时卷），则按需创建pvc
 func newEphemeralVolumeControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.EphemeralVolumeController,
@@ -394,6 +422,7 @@ func startEphemeralVolumeController(ctx context.Context, controllerContext Contr
 
 const defaultResourceClaimControllerWorkers = 10
 
+// 资源声明（ResourceClaim）是一个资源管理对象，允许用户和系统声明对资源（如存储、计算等）的需求
 func newResourceClaimControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.ResourceClaimController,
@@ -529,6 +558,8 @@ func startNamespaceController(ctx context.Context, controllerContext ControllerC
 	// the namespace cleanup controller is very chatty.  It makes lots of discovery calls and then it makes lots of delete calls
 	// the ratelimiter negatively affects its speed.  Deleting 100 total items in a namespace (that's only a few of each resource
 	// including events), takes ~10 seconds by default.
+	//命名空间清理控制器（Namespace Cleanup Controller）会频繁地执行资源发现和删除操作。速率限制器（Rate Limiter）的存在会降低其执行速度。
+	//例如，删除一个命名空间中总计 100 个项目（每种资源仅包含少量对象，包括事件）通常需要约 10 秒的时间。
 	nsKubeconfig := controllerContext.ClientBuilder.ConfigOrDie("namespace-controller")
 	nsKubeconfig.QPS *= 20
 	nsKubeconfig.Burst *= 100
@@ -646,6 +677,9 @@ func startGarbageCollectorController(ctx context.Context, controllerContext Cont
 	return garbageCollector, true, nil
 }
 
+// PersistentVolumeClaimProtection 控制器通过添加 finalizer 来防止 PVC 在关联资源（如 PV）的清理工作未完成时被删除。
+// 通过这种机制，可以确保 PVC 在被删除之前，相关的资源和依赖关系得以正确处理，从而避免潜在的数据丢失或其他不一致的情况。
+// 核心就是通过添加 "finalizer" 来防止 PVC 被意外删除，直到所有相关的资源和清理工作完成。
 func newPersistentVolumeClaimProtectionControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.PersistentVolumeClaimProtectionController,
@@ -668,6 +702,7 @@ func startPersistentVolumeClaimProtectionController(ctx context.Context, control
 	return nil, true, nil
 }
 
+// 给pv加finalize来进行删除保护
 func newPersistentVolumeProtectionControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.PersistentVolumeProtectionController,
@@ -685,6 +720,7 @@ func startPersistentVolumeProtectionController(ctx context.Context, controllerCo
 	return nil, true, nil
 }
 
+// 给vac加finalize来进行删除保护
 func newVolumeAttributesClassProtectionControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.VolumeAttributesClassProtectionController,
@@ -710,6 +746,7 @@ func startVolumeAttributesClassProtectionController(ctx context.Context, control
 	return nil, true, nil
 }
 
+// 监听job的变动，删除已完成的并且ttl已经到了的job
 func newTTLAfterFinishedControllerDescriptor() *ControllerDescriptor {
 	return &ControllerDescriptor{
 		name:     names.TTLAfterFinishedController,
@@ -882,6 +919,15 @@ func newStorageVersionGarbageCollectorControllerDescriptor() *ControllerDescript
 	}
 }
 
+// 在 Kubernetes 中，租赁概念以Lease为代表 coordination.k8s.io API组中的对象，
+// 用于系统关键功能，例如节点心跳和组件级领导者选举。
+// 在 Kubernetes 中，StorageVersion 是用于跟踪不同 API 服务器对存储资源的版本和编码方式的对象。每个 API 服务器可能有不同的存储版本信息，这些信息通常在 API 服务器内部存储，并记录了该服务器使用的存储版本以及其编码方式。
+// ------------------------------------------------------
+// ServerStorageVersion 是一个结构体，通常包含以下内容：
+//
+// APIServerID：标识 API 服务器的唯一标识符，用来跟踪该服务器的存储版本信息。
+// StorageVersion：表示该 API 服务器的存储版本信息，可能包含存储的格式、编码方式等。
+// 在这段代码中，serverStorageVersions 代表的是一个列表，包含多个 ServerStorageVersion 记录，每一条记录都代表某个 API 服务器的存储版本信息。该列表通常会与存储版本对象（StorageVersion）相关联，用来跟踪集群中不同 API 服务器的存储版本状态。
 func startStorageVersionGarbageCollectorController(ctx context.Context, controllerContext ControllerContext, controllerName string) (controller.Interface, bool, error) {
 	go storageversiongc.NewStorageVersionGC(
 		ctx,

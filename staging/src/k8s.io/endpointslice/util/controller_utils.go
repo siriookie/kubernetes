@@ -49,6 +49,7 @@ var semanticIgnoreResourceVersion = conversion.EqualitiesOrDie(
 
 // GetPodServiceMemberships returns a set of Service keys for Services that have
 // a selector matching the given pod.
+// 根据传进来的 pod 找到 select 了该 pod 的 service
 func GetPodServiceMemberships(serviceLister v1listers.ServiceLister, pod *v1.Pod) (sets.String, error) {
 	set := sets.String{}
 	services, err := serviceLister.Services(pod.Namespace).List(labels.Everything())
@@ -92,10 +93,17 @@ func deepHashObjectToString(objectToWrite interface{}) string {
 // ShouldPodBeInEndpoints returns true if a specified pod should be in an
 // Endpoints or EndpointSlice resource. Terminating pods are only included if
 // includeTerminating is true.
+// Pod 在成功调度到节点并处于 Running 状态时会获得 IP 地址。
+// 未就绪或 Pending 状态的 Pod 通常没有有效的 IP 地址，这里会把running 的
+// 和设置了publishNotReadyAddresses=true 的pod 返回 true
+//
+//	NOTE！！ ：// 去除掉phase == v1.PodFailed || phase == v1.PodSucceeded 的 pod 和
+//	// 没有 ip 地址的 pod
 func ShouldPodBeInEndpoints(pod *v1.Pod, includeTerminating bool) bool {
 	// "Terminal" describes when a Pod is complete (in a succeeded or failed phase).
 	// This is distinct from the "Terminating" condition which represents when a Pod
 	// is being terminated (metadata.deletionTimestamp is non nil).
+	// 如果 pod 已经是Failed 或者是 succeed 的状态了，就返回 False
 	if isPodTerminal(pod) {
 		return false
 	}
@@ -123,6 +131,7 @@ func ShouldSetHostname(pod *v1.Pod, svc *v1.Service) bool {
 func podEndpointsChanged(oldPod, newPod *v1.Pod) (bool, bool) {
 	// Check if the pod labels have changed, indicating a possible
 	// change in the service membership
+	// 比较 labels 和 hostname 和 Subdomain
 	labelsChanged := false
 	if !reflect.DeepEqual(newPod.Labels, oldPod.Labels) ||
 		!hostNameAndDomainAreEqual(newPod, oldPod) {
@@ -130,6 +139,7 @@ func podEndpointsChanged(oldPod, newPod *v1.Pod) (bool, bool) {
 	}
 
 	// If the pod's deletion timestamp is set, remove endpoint from ready address.
+	// 如果是删除pod 的行为
 	if newPod.DeletionTimestamp != oldPod.DeletionTimestamp {
 		return true, labelsChanged
 	}
@@ -137,11 +147,13 @@ func podEndpointsChanged(oldPod, newPod *v1.Pod) (bool, bool) {
 	// will move from the unready endpoints set to the ready endpoints.
 	// So for the purposes of an endpoint, a readiness change on a pod
 	// means we have a changed pod.
+	// 如果 pod 不再 ready 了
 	if IsPodReady(oldPod) != IsPodReady(newPod) {
 		return true, labelsChanged
 	}
 
 	// Check if the pod IPs have changed
+	// 看 pod 的 ip 是否变了
 	if len(oldPod.Status.PodIPs) != len(newPod.Status.PodIPs) {
 		return true, labelsChanged
 	}
@@ -247,6 +259,7 @@ func (sl portsInOrder) Less(i, j int) bool {
 // but excludes equality checks that would have already been covered with
 // endpoint hashing (see hashEndpoint func for more info) and ignores difference
 // in ResourceVersion of TargetRef.
+// 检查除了经过 hash 检查的字段之外还有哪些地方不一样的
 func EndpointsEqualBeyondHash(ep1, ep2 *discovery.Endpoint) bool {
 	if stringPtrChanged(ep1.NodeName, ep2.NodeName) {
 		return false

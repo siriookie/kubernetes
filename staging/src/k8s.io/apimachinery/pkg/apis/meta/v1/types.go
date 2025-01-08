@@ -206,6 +206,16 @@ type ObjectMeta struct {
 	// Read-only.
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	// +optional
+	// 类型：该字段是一个 RFC 3339 格式的日期和时间，表示此资源将被删除的时间。
+	//设置方式：当用户请求资源的优雅删除（graceful deletion）时，服务器会设置此字段，客户端不能直接设置这个字段。
+	//删除时机：资源在 DeletionTimestamp 所指定的时间点后将被删除：
+	//该资源将不再出现在资源列表中。
+	//该资源将不再通过名称访问。
+	//Finalizer：只有当资源的 finalizers 列表为空时，资源才会被删除。如果 finalizers 列表中仍有项目，删除操作会被阻塞。
+	//修改规则：
+	//一旦 DeletionTimestamp 被设置后，不能再次取消或设置为更晚的时间。但可以缩短时间，也可以在该时间之前删除资源。
+	//例如，用户可能请求一个 Pod 在 30 秒后被删除。Kubelet 会向 Pod 中的容器发送优雅终止信号，然后在 30 秒后发送强制终止信号（SIGKILL）。清理完成后，Pod 会从 API 中删除。
+	//在存在网络分区的情况下，资源可能在 DeletionTimestamp 时间点之后仍然存在，直到管理员或自动化进程确认资源已经完全终止。
 	DeletionTimestamp *Time `json:"deletionTimestamp,omitempty" protobuf:"bytes,9,opt,name=deletionTimestamp"`
 
 	// Number of seconds allowed for this object to gracefully terminate before
@@ -495,6 +505,17 @@ type GetOptions struct {
 type DeletionPropagation string
 
 const (
+	// 在 Kubernetes 中，PropagationPolicy 是一种控制资源在级联删除时传播行为的策略。它确定了资源删除时，是否以及如何影响该资源所关联的其他资源。
+	// PropagationPolicy 主要有三种策略：
+	//
+	//Foreground：
+	//前台删除：资源本身会被删除，并且会等待它所管理的所有子资源（如 Pod、ReplicaSet 等）被删除之后，才会完全删除父资源。
+	//在前台删除过程中，父资源删除请求会被阻塞，直到所有相关的子资源被删除。这种模式保证了相关资源的完整删除。
+	//Background：
+	//后台删除：资源本身会立即被删除，但与该资源关联的子资源会被 Kubernetes 以后台方式删除（这意味着子资源删除并不会阻止父资源的删除）。这种模式更高效，但它依赖于 Kubernetes 后台处理删除操作，不会强制等待子资源删除完成。
+	//Orphan：
+	//孤立删除：删除父资源时，Kubernetes 不会自动删除它的子资源，而是把子资源孤立出来，仍然保留这些子资源。如果不再需要这些子资源，可能需要手动删除它们。
+
 	// Orphans the dependents.
 	DeletePropagationOrphan DeletionPropagation = "Orphan"
 	// Deletes the object from the key-value store, the garbage collector will

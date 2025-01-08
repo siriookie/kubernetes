@@ -715,6 +715,9 @@ type DaemonSetStatus struct {
 	// uses this field as a collision avoidance mechanism when it needs to
 	// create the name for the newest ControllerRevision.
 	// +optional
+	// DaemonSet 的哈希冲突计数。DaemonSet 控制器在需要为最新的 ControllerRevision 创建名称时，
+	// 使用此字段作为冲突避免机制。
+	// +optional
 	CollisionCount *int32 `json:"collisionCount,omitempty" protobuf:"varint,9,opt,name=collisionCount"`
 
 	// Represents the latest available observations of a DaemonSet's current state.

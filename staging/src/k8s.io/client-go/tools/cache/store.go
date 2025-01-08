@@ -139,6 +139,7 @@ func MetaObjectToName(obj metav1.Object) ObjectName {
 //
 // TODO: replace key-as-string with a key-as-struct so that this
 // packing/unpacking won't be necessary.
+// 分割出 namespace 和 name
 func SplitMetaNamespaceKey(key string) (namespace, name string, err error) {
 	parts := strings.Split(key, "/")
 	switch len(parts) {

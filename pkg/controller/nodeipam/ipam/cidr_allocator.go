@@ -44,6 +44,12 @@ const (
 	RangeAllocatorType CIDRAllocatorType = "RangeAllocator"
 	// CloudAllocatorType is the allocator that uses cloud platform
 	// support to do node CIDR range allocations.
+	// CloudAllocatorType 是 Kubernetes 中的一种 CIDR 分配器类型，用于在云平台上分配节点的 CIDR 范围。它的主要功能和意义如下：
+	//
+	//主要功能
+	//云平台集成: CloudAllocatorType 表示 Kubernetes 将利用所运行的云服务提供商的 API 来自动分配和管理节点的 CIDR 地址范围。这通常适用于在云环境中运行的 Kubernetes 集群。
+	//动态分配: 通过云平台的支持，Kubernetes 可以动态地为新添加的节点分配 CIDR 范围，简化了网络管理。
+	//自动化管理: 使用云分配器可以减少手动配置的需要，确保节点的 IP 地址分配符合云服务提供商的最佳实践。
 	CloudAllocatorType CIDRAllocatorType = "CloudAllocator"
 	// IPAMFromClusterAllocatorType uses the ipam controller sync'ing the node
 	// CIDR range allocations from the cluster to the cloud.

@@ -94,10 +94,12 @@ func NewController(ctx context.Context, p ControllerParameters) (*PersistentVolu
 	}
 
 	// Prober is nil because PV is not aware of Flexvolume.
+	// Prober 为 nil，因为持久卷（PV）不知道 Flexvolume 的存在。
+
 	if err := controller.volumePluginMgr.InitPlugins(p.VolumePlugins, nil /* prober */, controller); err != nil {
 		return nil, fmt.Errorf("could not initialize volume plugins for PersistentVolume Controller: %w", err)
 	}
-
+	//监听PV
 	p.VolumeInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc:    func(obj interface{}) { controller.enqueueWork(ctx, controller.volumeQueue, obj) },
@@ -107,7 +109,7 @@ func NewController(ctx context.Context, p ControllerParameters) (*PersistentVolu
 	)
 	controller.volumeLister = p.VolumeInformer.Lister()
 	controller.volumeListerSynced = p.VolumeInformer.Informer().HasSynced
-
+	//监听PVC
 	p.ClaimInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc:    func(obj interface{}) { controller.enqueueWork(ctx, controller.claimQueue, obj) },
@@ -128,6 +130,8 @@ func NewController(ctx context.Context, p ControllerParameters) (*PersistentVolu
 
 	// This custom indexer will index pods by its PVC keys. Then we don't need
 	// to iterate all pods every time to find pods which reference given PVC.
+	// 它将 Pods 按照其 PVC（Persistent Volume Claim）键进行索引
+	// 通过使用索引器，控制器不需要每次都遍历所有的 Pods 来查找引用特定 PVC 的 Pods，从而优化了性能
 	if err := common.AddPodPVCIndexerIfNotPresent(controller.podIndexer); err != nil {
 		return nil, fmt.Errorf("could not initialize attach detach controller: %w", err)
 	}
@@ -142,6 +146,9 @@ func NewController(ctx context.Context, p ControllerParameters) (*PersistentVolu
 // initializeCaches fills all controller caches with initial data from etcd in
 // order to have the caches already filled when first addClaim/addVolume to
 // perform initial synchronization of the controller.
+// initializeCaches 从 etcd 中填充所有控制器缓存的初始数据，
+// 以便在第一次调用 addClaim/addVolume 时缓存已经被填充，
+// 从而执行控制器的初始同步。
 func (ctrl *PersistentVolumeController) initializeCaches(logger klog.Logger, volumeLister corelisters.PersistentVolumeLister, claimLister corelisters.PersistentVolumeClaimLister) {
 	volumeList, err := volumeLister.List(labels.Everything())
 	if err != nil {
@@ -150,6 +157,7 @@ func (ctrl *PersistentVolumeController) initializeCaches(logger klog.Logger, vol
 	}
 	for _, volume := range volumeList {
 		volumeClone := volume.DeepCopy()
+		//更新 pv缓存
 		if _, err = ctrl.storeVolumeUpdate(logger, volumeClone); err != nil {
 			logger.Error(err, "Error updating volume cache")
 		}
@@ -161,6 +169,7 @@ func (ctrl *PersistentVolumeController) initializeCaches(logger klog.Logger, vol
 		return
 	}
 	for _, claim := range claimList {
+		// 更新 pvc 缓存
 		if _, err = ctrl.storeClaimUpdate(logger, claim.DeepCopy()); err != nil {
 			logger.Error(err, "Error updating claim cache")
 		}
@@ -205,7 +214,7 @@ func (ctrl *PersistentVolumeController) updateVolume(ctx context.Context, volume
 	if !new {
 		return
 	}
-
+	// 是版本更新的 volume
 	err = ctrl.syncVolume(ctx, volume)
 	if err != nil {
 		if errors.IsConflict(err) {
@@ -348,6 +357,7 @@ func (ctrl *PersistentVolumeController) updateClaimMigrationAnnotations(ctx cont
 	return newClaim, nil
 }
 
+// 更新 PV 的 迁移相关注释（annotations） 和 删除保护标记（finalizers），以确保 PV 的状态正确反映其实际存储配置和迁移状态。
 func (ctrl *PersistentVolumeController) updateVolumeMigrationAnnotationsAndFinalizers(ctx context.Context,
 	volume *v1.PersistentVolume) (*v1.PersistentVolume, error) {
 	volumeClone := volume.DeepCopy()
@@ -371,6 +381,11 @@ func (ctrl *PersistentVolumeController) updateVolumeMigrationAnnotationsAndFinal
 	return newVol, nil
 }
 
+// // modifyDeletionFinalizers 根据回收策略和是否为内置卷来更新最终处理器。
+// // 只有当与 PV 关联的回收策略为 `Delete` 时，才会添加内置卷的删除保护最终处理器。
+// // 如果与 PV 关联的回收策略为 `Retain` 或 `Recycle`，则会移除内置卷的删除保护最终处理器，
+// // 移除最终处理器是为了反映 PV 上的回收策略更新。
+// // 该方法还会移除添加到 PV 上的任何外部删除保护最终处理器，这代表了 CSI 迁移的回滚或禁用场景。
 // modifyDeletionFinalizers updates the finalizers based on the reclaim policy and if it is a in-tree volume or not.
 // The in-tree PV deletion protection finalizer is only added if the reclaimPolicy associated with the PV is `Delete`.
 // The in-tree PV deletion protection finalizer is removed if the reclaimPolicy associated with the PV is `Retain` or
@@ -432,6 +447,10 @@ func modifyDeletionFinalizers(logger klog.Logger, cmpm CSIMigratedPluginManager,
 // driver name for that provisioner is "on" based on feature flags, it will also
 // remove the annotation is migration is "off" for that provisioner in rollback
 // scenarios. Returns true if the annotations map was modified and false otherwise.
+// updateMigrationAnnotations 接受一个注释（Annotations）映射，并使用 provisionerKey 检查是否存在一个
+// provisioner 名称。如果根据特性标志，该 provisioner 的 CSI 驱动名称迁移设置为“开启”，
+// 则会添加一个 "pv.kubernetes.io/migrated-to" 注释；如果在回滚场景中该 provisioner 的迁移设置为“关闭”，
+// 则会移除该注释。若注释映射被修改，则返回 true，否则返回 false。
 func updateMigrationAnnotations(logger klog.Logger, cmpm CSIMigratedPluginManager, translator CSINameTranslator, ann map[string]string, claim bool) bool {
 	var csiDriverName string
 	var err error
@@ -484,6 +503,7 @@ func updateMigrationAnnotations(logger klog.Logger, cmpm CSIMigratedPluginManage
 
 // volumeWorker processes items from volumeQueue. It must run only once,
 // syncVolume is not assured to be reentrant.
+// volumeWorker 用于处理卷队列中的任务，并且必须确保在任何时刻只运行一次，因为 syncVolume 函数不是可重入的
 func (ctrl *PersistentVolumeController) volumeWorker(ctx context.Context) {
 	logger := klog.FromContext(ctx)
 	workFunc := func(ctx context.Context) bool {
@@ -503,6 +523,7 @@ func (ctrl *PersistentVolumeController) volumeWorker(ctx context.Context) {
 		if err == nil {
 			// The volume still exists in informer cache, the event must have
 			// been add/update/sync
+			// 监听 pv 变更 绑定 pvc
 			ctrl.updateVolume(ctx, volume)
 			return false
 		}
@@ -600,6 +621,8 @@ func (ctrl *PersistentVolumeController) claimWorker(ctx context.Context) {
 // resync supplements short resync period of shared informers - we don't want
 // all consumers of PV/PVC shared informer to have a short resync period,
 // therefore we do our own.
+// 它补充了 Shared Informer 的通知机制，因为 Shared Informer 的重新同步周期可能较长，
+// 而某些问题可能需要短周期处理以更及时地响应变化。
 func (ctrl *PersistentVolumeController) resync(ctx context.Context) {
 	logger := klog.FromContext(ctx)
 	logger.V(4).Info("Resyncing PV controller")
@@ -672,6 +695,12 @@ func getVolumeStatusForLogging(volume *v1.PersistentVolume) string {
 // callback (i.e. with events from etcd) or with an object modified by the
 // controller itself. Returns "true", if the cache was updated, false if the
 // object is an old version and should be ignored.
+// 获取对象的键(使用 controller.KeyFunc),以便在缓存中查找该对象。
+// 从缓存中获取对象的当前版本(如果存在)。
+// 如果对象在缓存中不存在,则将其添加到缓存中。
+// 如果对象存在于缓存中,则比较新旧对象的资源版本:
+// 如果新对象的资源版本早于缓存中的对象,则忽略新对象(返回 false),因为缓存中的版本更新。
+// 如果新对象的资源版本大于或等于缓存中的对象,则更新缓存中的对象并返回 true。
 func storeObjectUpdate(logger klog.Logger, store cache.Store, obj interface{}, className string) (bool, error) {
 	objName, err := controller.KeyFunc(obj)
 	if err != nil {

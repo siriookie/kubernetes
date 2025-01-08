@@ -76,6 +76,16 @@ type defaultStatefulSetControl struct {
 // strategy allows these constraints to be relaxed - pods will be created and deleted eagerly and
 // in no particular order. Clients using the burst strategy should be careful to ensure they
 // understand the consistency implications of having unpredictable numbers of pods available.
+
+// UpdateStatefulSet 执行 StatefulSet 的核心逻辑循环，默认采用可预测且一致的单调更新策略：
+// - 扩容按照序号顺序进行
+// - 当任何 Pod 不健康时不会创建新的 Pod
+// - Pod 按照降序顺序终止
+//
+// burst（突发）策略允许放宽这些约束：
+// - Pod 将被急切地创建和删除
+// - Pod 的创建和删除不遵循特定顺序
+// 使用 burst 策略的客户端应该谨慎，确保理解在 Pod 数量不可预测的情况下对一致性的影响。
 func (ssc *defaultStatefulSetControl) UpdateStatefulSet(ctx context.Context, set *apps.StatefulSet, pods []*v1.Pod) (*apps.StatefulSetStatus, error) {
 	set = set.DeepCopy() // set is modified when a new revision is created in performUpdate. Make a copy now to avoid mutation errors.
 
@@ -99,6 +109,14 @@ func (ssc *defaultStatefulSetControl) UpdateStatefulSet(ctx context.Context, set
 	return status, ssc.truncateHistory(set, pods, revisions, currentRevision, updateRevision)
 }
 
+// set: 当前的 StatefulSet 对象，包含了更新需要的信息，比如目标副本数、策略等。
+// pods: 属于该 StatefulSet 的当前 Pod 列表。
+// revisions: 该 StatefulSet 的版本历史，即 ControllerRevision 对象的列表，表示当前和过去的配置状态。
+// 返回值：
+// currentRevision: 当前 StatefulSet 所使用的版本。
+// updateRevision: 目标更新的版本。
+// currentStatus: 更新后 StatefulSet 的状态。
+// error: 错误信息，如果没有错误则为 nil。
 func (ssc *defaultStatefulSetControl) performUpdate(
 	ctx context.Context, set *apps.StatefulSet, pods []*v1.Pod, revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, *apps.StatefulSetStatus, error) {
 	var currentStatus *apps.StatefulSetStatus
@@ -110,6 +128,8 @@ func (ssc *defaultStatefulSetControl) performUpdate(
 	}
 
 	// perform the main update function and get the status
+	// 调用 updateStatefulSet 方法，根据当前版本、目标版本和 Pod 列表更新 StatefulSet。
+	//如果 updateStatefulSet 返回错误，且没有更新状态，直接返回。
 	currentStatus, err = ssc.updateStatefulSet(ctx, set, currentRevision, updateRevision, collisionCount, pods)
 	if err != nil && currentStatus == nil {
 		return currentRevision, updateRevision, nil, err
@@ -168,6 +188,12 @@ func (ssc *defaultStatefulSetControl) AdoptOrphanRevisions(
 // considered to be live. Non-live revisions are deleted, starting with the revision with the lowest Revision, until
 // only RevisionHistoryLimit revisions remain. If the returned error is nil the operation was successful. This method
 // expects that revisions is sorted when supplied.
+// truncateHistory 从 StatefulSet 的历史记录中截断（删除）任何非活动的 ControllerRevisions。
+// StatefulSet Status 中的 UpdateRevision 和 CurrentRevision 被视为活动的。
+// 任何与 pods 中的 Pod 关联的版本也被视为活动的。
+// 非活动版本会被删除，从 Revision 号最小的版本开始删除，直到只剩下 RevisionHistoryLimit 个版本。
+// 如果返回的错误为 nil，则表示操作成功。
+// 此方法要求传入的 revisions 参数是已排序的。
 func (ssc *defaultStatefulSetControl) truncateHistory(
 	set *apps.StatefulSet,
 	pods []*v1.Pod,
@@ -213,6 +239,11 @@ func (ssc *defaultStatefulSetControl) truncateHistory(
 // building the ControllerRevision names for name collision avoidance. This method may create
 // a new revision, or modify the Revision of an existing revision if an update to set is detected.
 // This method expects that revisions is sorted when supplied.
+// getStatefulSetRevisions 返回当前和更新的 ControllerRevisions。它还返回一个冲突计数，
+// 记录在创建新的 ControllerRevisions 时观察到的名称冲突数量。
+// 每次发生名称冲突时，该计数会递增，并在构建 ControllerRevision 名称以避免名称冲突时使用。
+// 此方法可能会创建一个新的修订版本，或者在检测到对集合的更新时修改现有修订版本的修订号。
+// 此方法期望在提供时修订版本已排序。
 func (ssc *defaultStatefulSetControl) getStatefulSetRevisions(
 	set *apps.StatefulSet,
 	revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, int32, error) {
@@ -361,6 +392,13 @@ func updateStatus(status *apps.StatefulSetStatus, minReadySeconds int32, current
 	}
 }
 
+// 删除失败或成功的 Pod：如果 Pod 失败或成功且未被标记删除，则删除该 Pod。
+// 创建未创建的 Pod：如果 Pod 尚未创建，则根据条件创建新的 Pod。
+// 处理 Pending 状态的 Pod：触发 PVC 创建以确保 Pod 的持久卷存在。
+// 等待终止中的 Pod：如果 Pod 正在终止且需要保持顺序，则等待其终止完成。
+// 等待运行和就绪的 Pod：确保所有前序 Pod 都已运行并就绪。
+// 等待可用的 Pod：确保所有前序 Pod 都已可用。
+// 更新 Pod：如果 Pod 的身份、存储和保留策略匹配，则更新 Pod。
 func (ssc *defaultStatefulSetControl) processReplica(
 	ctx context.Context,
 	set *apps.StatefulSet,
@@ -375,6 +413,8 @@ func (ssc *defaultStatefulSetControl) processReplica(
 	// (e.g. terminated on node reboot) is determined by the exit code of the
 	// container, not by the reason for pod termination. We should restart the pod
 	// regardless of the exit code.
+	// 这段代码的核心逻辑是检测 StatefulSet 中的某个 Pod 是否处于失败 (Failed) 或完成 (Succeeded) 的状态。
+	//如果是的话，可能需要删除该 Pod，从而允许 StatefulSet 创建新的 Pod 来保持副本数量。
 	if isFailed(replicas[i]) || isSucceeded(replicas[i]) {
 		if replicas[i].DeletionTimestamp == nil {
 			if err := ssc.podControl.DeleteStatefulPod(set, replicas[i]); err != nil {
@@ -516,6 +556,17 @@ func runForAll(pods []*v1.Pod, fn func(i int) (bool, error), monotonic bool) (bo
 // all Pods with ordinal less than UpdateStrategy.Partition.Ordinal must be at Status.CurrentRevision and all other
 // Pods must be at Status.UpdateRevision. If the returned error is nil, the returned StatefulSetStatus is valid and the
 // update must be recorded. If the error is not nil, the method should be retried until successful.
+// updateStatefulSet 执行 StatefulSet 的更新功能。此方法创建、更新和删除 Pods，以使系统符合集合的目标状态。
+// 目标状态始终包含 set.Spec.Replicas 个处于就绪状态的 Pods。
+// 如果集合的 UpdateStrategy.Type 为 RollingUpdateStatefulSetStrategyType，
+// 则集合中的所有 Pods 必须处于 set.Status.CurrentRevision。
+// 如果集合的 UpdateStrategy.Type 为 OnDeleteStatefulSetStrategyType，
+// 则目标状态对集合中 Pods 的修订版本没有任何隐含要求。
+// 如果集合的 UpdateStrategy.Type 为 PartitionStatefulSetStrategyType，
+// 则所有序号小于 UpdateStrategy.Partition.Ordinal 的 Pods 必须处于 Status.CurrentRevision，
+// 所有其他 Pods 必须处于 Status.UpdateRevision。
+// 如果返回的错误为 nil，则返回的 StatefulSetStatus 是有效的，并且更新必须被记录。
+// 如果错误不为 nil，则该方法应重试，直到成功为止。
 func (ssc *defaultStatefulSetControl) updateStatefulSet(
 	ctx context.Context,
 	set *apps.StatefulSet,
@@ -566,6 +617,7 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 	}
 
 	// for any empty indices in the sequence [0,set.Spec.Replicas) create a new Pod at the correct revision
+	// 拿到Pods的开始和结束的索引，把 pod 的信息处理好
 	start, end := getStartOrdinal(set), getEndOrdinal(set)
 	for ord := start; ord <= end; ord++ {
 		replicaIdx := ord - start
@@ -646,6 +698,9 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 	// We will terminate Pods in a monotonically decreasing order.
 	// Note that we do not resurrect Pods in this interval. Also note that scaling will take precedence over
 	// updates.
+	// 在处理淘汰 Pods (condemned Pods) 的过程中：
+	//确保所有先前的 Pods（序号比当前要删除的 Pod 小的 Pods）已经是运行中（Running）且就绪（Ready）。
+	//逐个删除 Pods，按照 StatefulSet 的语义，维持状态和更新流程的有序性。
 	processCondemnedFn := func(i int) (bool, error) {
 		return ssc.processCondemned(ctx, set, firstUnhealthyPod, monotonic, condemned, i)
 	}

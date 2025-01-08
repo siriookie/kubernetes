@@ -108,6 +108,11 @@ func NewController(
 		// PVC.
 		// Deletion of the PVC is handled through the owner reference and garbage collection.
 		// Therefore pod deletions also can be ignored.
+		//PodSpec 不可变：Kubernetes 中的 Pod 配置（PodSpec）一旦创建就不能修改。这意味着，如果 Pod 被更新了，控制器无需处理这些更新，因为它们不会影响 PVC 的生成和管理。
+		//
+		//PVC 的删除由所有者引用和垃圾回收控制：Pod 和 PVC 之间存在父子关系（通过 owner references）。当 Pod 被删除时，关联的 PVC 会自动被删除，控制器不需要显式处理 PVC 删除的操作。
+		//
+		//Pod 删除可以忽略：由于 Pod 的删除会触发垃圾回收，控制器无需专门去处理删除操作。PVC 的删除会自动发生，而控制器不需要参与其中。
 	})
 	pvcInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		DeleteFunc: ec.onPVCDelete,
@@ -210,6 +215,9 @@ func (ec *ephemeralController) processNextWorkItem(ctx context.Context) bool {
 
 // syncHandler is invoked for each pod which might need to be processed.
 // If an error is returned from this function, the pod will be requeued.
+// 处理每个 Pod 的卷，特别是 ephemeral volumes，这类卷与 Pod 生命周期密切相关
+// ，当 Pod 被删除时，卷也会随之删除。
+// ！！这里只有创建的逻辑，删除 PVC 的逻辑通常是由 Kubernetes 的 garbage collection 机制和 Pod 的生命周期管理 处理的。
 func (ec *ephemeralController) syncHandler(ctx context.Context, key string) error {
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
@@ -243,6 +251,13 @@ func (ec *ephemeralController) syncHandler(ctx context.Context, key string) erro
 }
 
 // handleEphemeralVolume is invoked for each volume of a pod.
+// 对于 ephemeral volume，检查其对应的 PVC 是否已经创建。
+// 如果 PVC 已存在且与 Pod 匹配，则什么都不做。
+// 如果 PVC 不存在或不匹配，则根据卷的模板创建 PVC，并将其与 Pod 进行绑定（通过 OwnerReferences）。
+// 该函数确保在 Pod 生命周期结束时，临时卷也会随之删除，防止留下不再使用的资源。
+// 核心功能：
+// Ephemeral volumes 的创建和管理，确保 Pod 中的临时卷正确地与 PVC 关联。
+// 如果 PVC 已经存在且正确，则跳过创建；如果不存在或不匹配，则创建 PVC
 func (ec *ephemeralController) handleVolume(ctx context.Context, pod *v1.Pod, vol v1.Volume) error {
 	logger := klog.FromContext(ctx)
 	logger.V(5).Info("Ephemeral: checking volume", "volumeName", vol.Name)

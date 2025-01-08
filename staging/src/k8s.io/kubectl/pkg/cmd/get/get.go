@@ -53,33 +53,33 @@ import (
 
 // GetOptions contains the input to the get command.
 type GetOptions struct {
-	PrintFlags             *PrintFlags
-	ToPrinter              func(*meta.RESTMapping, *bool, bool, bool) (printers.ResourcePrinterFunc, error)
-	IsHumanReadablePrinter bool
+	PrintFlags             *PrintFlags                                                                      //与打印选项相关的标志，可能包括输出格式（如 -o）、是否打印表头等。这些选项会控制如何格式化 kubectl get 的输出。
+	ToPrinter              func(*meta.RESTMapping, *bool, bool, bool) (printers.ResourcePrinterFunc, error) //一个函数，用于将 RESTMapping 转换为实际的打印函数。打印函数的返回值会负责输出资源对象的具体内容。kubectl get 命令需要根据 ToPrinter 来决定如何展示数据。
+	IsHumanReadablePrinter bool                                                                             // 标志是否使用“人类可读”的打印格式。这通常意味着输出会采用更易于阅读的格式，如表格形式。
 
-	CmdParent string
+	CmdParent string //当前命令的父命令名称。kubectl get 是 kubectl 命令的一部分，因此它的父命令是 kubectl 本身。
 
-	resource.FilenameOptions
+	resource.FilenameOptions //包含与文件名相关的选项，通常用于指定资源清单文件或 YAML/JSON 配置文件
 
-	Raw       string
-	Watch     bool
-	WatchOnly bool
-	ChunkSize int64
+	Raw       string //一个原始字符串，通常包含未经处理的输入或资源内容。可以用于直接传递给 Kubernetes API 或进行自定义处理。
+	Watch     bool   //一个布尔值，指示是否启用 "watch" 模式，即持续监视资源的变化。如果设置为 true，kubectl get 将持续显示资源状态变化。
+	WatchOnly bool   //如果设置为 true，kubectl get 将仅在 watch 模式下显示变化，不会显示初始的资源状态。
+	ChunkSize int64  //用于分页的每块数据大小。通常在数据量较大的时候，分块获取数据可以避免一次性请求太多资源。
 
-	OutputWatchEvents bool
+	OutputWatchEvents bool //是否在 watch 模式下输出事件。当 Kubernetes 资源发生变化时，kubectl get 会输出这些变化事件。
 
-	LabelSelector     string
-	FieldSelector     string
-	AllNamespaces     bool
-	Namespace         string
-	ExplicitNamespace bool
-	Subresource       string
-	SortBy            string
+	LabelSelector     string //标签选择器，用于根据资源的标签过滤结果。格式通常为 key=value。
+	FieldSelector     string //字段选择器，用于基于资源的字段值进行过滤。与 LabelSelector 类似，但更精确。
+	AllNamespaces     bool   //如果设置为 true，kubectl get 将显示所有命名空间中的资源，而不仅仅是当前命名空间。
+	Namespace         string //指定命名空间。与 AllNamespaces 配合使用，决定命令在哪个命名空间中运行。
+	ExplicitNamespace bool   // 如果为 true，表示明确指定了命名空间。这个标志用于区分命名空间是由用户显式指定的，还是由默认的命名空间值推断出来的。
+	Subresource       string //子资源的名称。例如，在获取一个 Pod 的日志时，log 是一个子资源。这个字段指定要获取的子资源名称。
+	SortBy            string //资源排序的依据。可以按某个字段进行排序，通常用于按照时间、名称等排序。
 
-	ServerPrint bool
+	ServerPrint bool //如果设置为 true，表示输出来自服务器端的打印，而不是本地格式化的数据。这通常用于某些服务器端打印功能。
 
-	NoHeaders      bool
-	IgnoreNotFound bool
+	NoHeaders      bool //如果设置为 true，在输出中不显示列标题。这个选项通常用于 kubectl get 的表格输出格式，决定是否包括表头。
+	IgnoreNotFound bool //如果设置为 true，即使找不到指定的资源，kubectl get 也不会返回错误，而是跳过。
 
 	genericiooptions.IOStreams
 }
@@ -163,11 +163,12 @@ func NewCmdGet(parent string, f cmdutil.Factory, streams genericiooptions.IOStre
 
 	cmd := &cobra.Command{
 		Use:                   fmt.Sprintf("get [(-o|--output=)%s] (TYPE[.VERSION][.GROUP] [NAME | -l label] | TYPE[.VERSION][.GROUP]/NAME ...) [flags]", strings.Join(o.PrintFlags.AllowedFormats(), "|")),
-		DisableFlagsInUseLine: true,
+		DisableFlagsInUseLine: true, //设为 true，表示不在命令行中显示标志（例如 -o 等），仅显示命令本身。
 		Short:                 i18n.T("Display one or many resources"),
 		Long:                  getLong + "\n\n" + cmdutil.SuggestAPIResources(parent),
 		Example:               getExample,
 		// ValidArgsFunction is set when this function is called so that we have access to the util package
+		// 当命令执行时，实际调用的函数。这里会执行 Complete（完成命令参数的填充）、Validate（验证参数是否合法）和 Run（执行实际操作）三个函数。
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
 			cmdutil.CheckErr(o.Validate())
@@ -195,6 +196,7 @@ func NewCmdGet(parent string, f cmdutil.Factory, streams genericiooptions.IOStre
 
 // Complete takes the command arguments and factory and infers any remaining options.
 func (o *GetOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []string) error {
+	//如果 --raw 参数被设置，表示用户希望直接请求原始 URI，此时不允许传递任何其他参数。如果传递了参数，返回错误。
 	if len(o.Raw) > 0 {
 		if len(args) > 0 {
 			return fmt.Errorf("arguments may not be passed when --raw is specified")
@@ -203,6 +205,8 @@ func (o *GetOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []stri
 	}
 
 	var err error
+	//通过工厂方法 f.ToRawKubeConfigLoader().Namespace() 获取当前 Kubernetes 上下文中的命名空间，
+	//并将其存储在 o.Namespace 中。如果设置了 --all-namespaces，则将 ExplicitNamespace 设置为 false，意味着忽略命名空间。
 	o.Namespace, o.ExplicitNamespace, err = f.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
@@ -220,15 +224,17 @@ func (o *GetOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []stri
 	// TODO (soltysh): currently we don't support custom columns
 	// with server side print. So in these cases force the old behavior.
 	outputOption := cmd.Flags().Lookup("output").Value.String()
+	//如果用户选择了 --output=custom-columns、--output=yaml 或 --output=json，则禁用服务器端打印（因为这些输出格式通常不支持服务器端打印）。
+	//处理模板参数：
 	if strings.Contains(outputOption, "custom-columns") || outputOption == "yaml" || strings.Contains(outputOption, "json") {
 		o.ServerPrint = false
 	}
-
+	//获取 --template 参数的值，用于在输出时使用自定义模板格式。
 	templateArg := ""
 	if o.PrintFlags.TemplateFlags != nil && o.PrintFlags.TemplateFlags.TemplateArgument != nil {
 		templateArg = *o.PrintFlags.TemplateFlags.TemplateArgument
 	}
-
+	//如果没有指定输出格式，或者输出格式为 wide，则认为是人类可读格式。
 	// human readable printers have special conversion rules, so we determine if we're using one.
 	if (len(*o.PrintFlags.OutputFormat) == 0 && len(templateArg) == 0) || *o.PrintFlags.OutputFormat == "wide" {
 		o.IsHumanReadablePrinter = true
@@ -296,6 +302,10 @@ func (o *GetOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []stri
 
 // Validate checks the set of flags provided by the user.
 func (o *GetOptions) Validate() error {
+	//--raw 选项的验证：
+	//如果 --raw 被设置，并且与其他会影响服务器请求或输出的选项一起使用（例如 --watch、--watch-only、--label-selector），则返回错误。--raw 是用来直接指定一个 URL 请求的，不允许与其他选项一起使用。
+	//--raw 不能与 --output 一起使用，如果 --output 设置了格式，返回错误。
+	//确保 --raw 提供的是一个有效的 URL 路径，如果无效，返回错误。
 	if len(o.Raw) > 0 {
 		if o.Watch || o.WatchOnly || len(o.LabelSelector) > 0 {
 			return fmt.Errorf("--raw may not be specified with other flags that filter the server request or alter the output")
@@ -307,12 +317,14 @@ func (o *GetOptions) Validate() error {
 			return fmt.Errorf("--raw must be a valid URL path: %v", err)
 		}
 	}
+	// 如果 --show-labels 被启用，并且 --output 选项的格式不为 wide，则返回错误。--show-labels 只能与 wide 格式兼容，不能与其他输出格式一起使用。
 	if o.PrintFlags.HumanReadableFlags.ShowLabels != nil && *o.PrintFlags.HumanReadableFlags.ShowLabels && o.PrintFlags.OutputFormat != nil {
 		outputOption := *o.PrintFlags.OutputFormat
 		if outputOption != "" && outputOption != "wide" {
 			return fmt.Errorf("--show-labels option cannot be used with %s printer", outputOption)
 		}
 	}
+	//如果设置了 --output-watch-events，但没有同时设置 --watch 或 --watch-only，则返回错误。--output-watch-events 选项只能与 --watch 或 --watch-only 选项一起使用。
 	if o.OutputWatchEvents && !(o.Watch || o.WatchOnly) {
 		return fmt.Errorf("--output-watch-events option can only be used with --watch or --watch-only")
 	}

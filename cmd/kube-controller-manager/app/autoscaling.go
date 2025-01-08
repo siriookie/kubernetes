@@ -21,7 +21,6 @@ package app
 
 import (
 	"context"
-
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/scale"
 	"k8s.io/controller-manager/controller"
@@ -47,9 +46,12 @@ func startHorizontalPodAutoscalerControllerWithRESTClient(ctx context.Context, c
 	clientConfig := controllerContext.ClientBuilder.ConfigOrDie("horizontal-pod-autoscaler")
 	hpaClient := controllerContext.ClientBuilder.ClientOrDie("horizontal-pod-autoscaler")
 
+	//使用custom_metrics.NewAvailableAPIsGetter创建API版本获取器
 	apiVersionsGetter := custom_metrics.NewAvailableAPIsGetter(hpaClient.Discovery())
 	// invalidate the discovery information roughly once per resync interval our API
 	// information is *at most* two resync intervals old.
+	// 控制器为了确保获取的资源信息是最新的，会定期让其“失效”或过期，从而重新向 API 服务器请求更新版本的发现信息。
+	//“失效”的频率是基于 resync interval（重同步间隔） 设定的，大约每个重同步周期失效一次。
 	go custom_metrics.PeriodicallyInvalidate(
 		apiVersionsGetter,
 		controllerContext.ComponentConfig.HPAController.HorizontalPodAutoscalerSyncPeriod.Duration,
@@ -70,12 +72,13 @@ func startHPAControllerWithMetricsClient(ctx context.Context, controllerContext 
 
 	// we don't use cached discovery because DiscoveryScaleKindResolver does its own caching,
 	// so we want to re-fetch every time when we actually ask for it
+	//  我们不使用缓存的发现信息，因为 DiscoveryScaleKindResolver 本身有自己的缓存机制，
+	// 所以当我们实际需要时，每次都希望重新获取最新的信息。
 	scaleKindResolver := scale.NewDiscoveryScaleKindResolver(hpaClient.Discovery())
 	scaleClient, err := scale.NewForConfig(hpaClientConfig, controllerContext.RESTMapper, dynamic.LegacyAPIPathResolverFunc, scaleKindResolver)
 	if err != nil {
 		return nil, false, err
 	}
-
 	go podautoscaler.NewHorizontalController(
 		ctx,
 		hpaClient.CoreV1(),

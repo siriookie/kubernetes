@@ -51,6 +51,8 @@ func init() {
 // NewPublisher construct a new controller which would manage the configmap
 // which stores certificates in each namespace. It will make sure certificate
 // configmap exists in each namespace.
+// 管理每个命名空间中的 ConfigMap，该 ConfigMap 存储了证书。
+// 控制器的作用是确保每个命名空间中都存在一个存储证书的 ConfigMap
 func NewPublisher(cmInformer coreinformers.ConfigMapInformer, nsInformer coreinformers.NamespaceInformer, cl clientset.Interface, rootCA []byte) (*Publisher, error) {
 	e := &Publisher{
 		client: cl,
@@ -189,6 +191,7 @@ func (c *Publisher) syncNamespace(ctx context.Context, ns string) (err error) {
 	cm, err := c.cmLister.ConfigMaps(ns).Get(RootCACertConfigMapName)
 	switch {
 	case apierrors.IsNotFound(err):
+		// 该namespace 下没有root ca，则要去创建root ca
 		_, err = c.client.CoreV1().ConfigMaps(ns).Create(ctx, &v1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        RootCACertConfigMapName,
@@ -217,6 +220,7 @@ func (c *Publisher) syncNamespace(ctx context.Context, ns string) (err error) {
 	}
 
 	// copy so we don't modify the cache's instance of the configmap
+	// 如果根证书不知道怎么回事莫名其妙的变了
 	cm = cm.DeepCopy()
 	cm.Data = data
 	if cm.Annotations == nil {

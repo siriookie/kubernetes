@@ -295,6 +295,7 @@ func (ssc *StatefulSetController) deletePod(logger klog.Logger, obj interface{})
 		// No controller should care about orphans being deleted.
 		return
 	}
+	// 过滤掉不是 stateful set 的 pod
 	set := ssc.resolveControllerRef(pod.Namespace, controllerRef)
 	if set == nil {
 		return
