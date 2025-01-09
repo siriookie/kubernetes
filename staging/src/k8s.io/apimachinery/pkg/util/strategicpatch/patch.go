@@ -91,6 +91,8 @@ type MergeOptions struct {
 // document and a modified document, which are passed to the method as json encoded content. It will
 // return a patch that yields the modified document when applied to the original document, or an error
 // if either of the two documents is invalid.
+// CreateTwoWayMergePatch 函数的作用是创建一个 战略合并补丁（Strategic Merge Patch）
+// ，可以用于将一个原始的 JSON 文档更新为修改后的目标文档。该函数接受三个主要输入，并返回一个 JSON 格式的补丁文档，或者在输入不合法时返回一个错误。
 func CreateTwoWayMergePatch(original, modified []byte, dataStruct interface{}, fns ...mergepatch.PreconditionFunc) ([]byte, error) {
 	schema, err := NewPatchMetaFromStruct(dataStruct)
 	if err != nil {

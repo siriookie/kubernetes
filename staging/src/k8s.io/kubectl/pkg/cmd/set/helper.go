@@ -95,8 +95,13 @@ type PatchFn func(runtime.Object) ([]byte, error)
 // CalculatePatch calls the mutation function on the provided info object, and generates a strategic merge patch for
 // the changes in the object. Encoder must be able to encode the info into the appropriate destination type.
 // This function returns whether the mutation function made any change in the original object.
+// 计算一个资源对象在应用变更（通过 mutateFn）前后的差异，并生成相应的 战略合并补丁（Strategic Merge Patch），
+// 供后续操作（如 API Server 的 PATCH 请求）使用
 func CalculatePatch(patch *Patch, encoder runtime.Encoder, mutateFn PatchFn) bool {
+	//将操作对象（patch.Info.Object）序列化为 Before，表示变更前的状态。
+	//如果编码过程中出错，会将错误信息记录到 patch.Err。
 	patch.Before, patch.Err = runtime.Encode(encoder, patch.Info.Object)
+	//执行用户定义的变更函数 mutateFn，对对象进行操作，返回变更后的状态 After。
 	patch.After, patch.Err = mutateFn(patch.Info.Object)
 	if patch.Err != nil {
 		return true
@@ -104,7 +109,7 @@ func CalculatePatch(patch *Patch, encoder runtime.Encoder, mutateFn PatchFn) boo
 	if patch.After == nil {
 		return false
 	}
-
+	//使用 strategicpatch.CreateTwoWayMergePatch 函数比较对象变更前的状态（Before）与变更后的状态（After），生成一个战略合并补丁 Patch。
 	patch.Patch, patch.Err = strategicpatch.CreateTwoWayMergePatch(patch.Before, patch.After, patch.Info.Object)
 	return true
 }

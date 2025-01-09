@@ -293,6 +293,8 @@ func (o *ExposeServiceOptions) Complete(f cmdutil.Factory) error {
 
 // RunExpose retrieves the Kubernetes Object from the API server and expose it to a
 // Kubernetes Service
+// 这个函数 RunExpose 是 Kubernetes 中的一个命令处理逻辑，用于将一个资源（如 Pod、Deployment 等）暴露为一个 Kubernetes Service。
+// 它是 kubectl expose 命令背后的核心逻辑，能够根据用户指定的参数和资源，将其暴露成一个可以被外界访问的服务。
 func (o *ExposeServiceOptions) RunExpose(cmd *cobra.Command, args []string) error {
 	r := o.Builder.
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
@@ -313,6 +315,7 @@ func (o *ExposeServiceOptions) RunExpose(cmd *cobra.Command, args []string) erro
 		}
 
 		mapping := info.ResourceMapping()
+		// 检查是不是可以被暴露出来的
 		if err := o.CanBeExposed(mapping.GroupVersionKind.GroupKind()); err != nil {
 			return err
 		}
@@ -332,11 +335,13 @@ func (o *ExposeServiceOptions) RunExpose(cmd *cobra.Command, args []string) erro
 			}
 			o.Selector = s
 		}
-
+		// 判断是不是headlessService
 		isHeadlessService := o.ClusterIP == "None"
 
 		// For objects that need a port, derive it from the exposed object in case a user
 		// didn't explicitly specify one via --port
+		// 如果用户没有通过 --port 参数显式地指定端口，那么代码会尝试从被暴露的对象（例如 Pod、Service、ReplicationController 等）中派生出一个适当的端口
+		// 就是直接从spec中获取端口
 		if len(o.Port) == 0 {
 			ports, err := o.PortsForObject(info.Object)
 			if err != nil {
@@ -356,6 +361,8 @@ func (o *ExposeServiceOptions) RunExpose(cmd *cobra.Command, args []string) erro
 
 		// Always try to derive protocols from the exposed object, may use
 		// different protocols for different ports.
+		// 从暴露的对象中推导通信协议，并为端口分配适当的协议。
+		// 从spec中获取protocols
 		protocolsMap, err := o.ProtocolsForObject(info.Object)
 		if err != nil {
 			return fmt.Errorf("couldn't find protocol via introspection: %v", err)
@@ -388,6 +395,7 @@ func (o *ExposeServiceOptions) RunExpose(cmd *cobra.Command, args []string) erro
 		}
 
 		if o.DryRunStrategy == cmdutil.DryRunClient {
+			// 如果是 Dry Run，客户端会模拟创建服务，但不实际执行
 			if meta, err := meta.Accessor(overrideService); err == nil && o.EnforceNamespace {
 				meta.SetNamespace(o.Namespace)
 			}
@@ -411,6 +419,7 @@ func (o *ExposeServiceOptions) RunExpose(cmd *cobra.Command, args []string) erro
 		}
 		// Serialize the object with the annotation applied.
 		client, err := o.ClientForMapping(objMapping)
+		// 调create resource
 		if err != nil {
 			return err
 		}
@@ -427,6 +436,7 @@ func (o *ExposeServiceOptions) RunExpose(cmd *cobra.Command, args []string) erro
 	return err
 }
 
+// 为 kubectl expose 创建一个 Kubernetes Service 对象。
 func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 	if len(o.Selector) == 0 {
 		return nil, fmt.Errorf("selector must be specified")
@@ -437,6 +447,8 @@ func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 	}
 
 	var labels map[string]string
+	//解析 Selector 和 Labels。
+	//Selector 决定匹配的资源，Labels 用于给 Service 自身添加标签，便于管理。
 	if len(o.Labels) > 0 {
 		labels, err = parseLabels(o.Labels)
 		if err != nil {
@@ -445,6 +457,7 @@ func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 	}
 
 	name := o.Name
+	//如果没有通过 --name 显式指定 Service 名称，则尝试用默认名称（通常是暴露对象的名称）。
 	if len(name) == 0 {
 		name = o.DefaultName
 		if len(name) == 0 {
@@ -453,6 +466,7 @@ func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 	}
 
 	var portProtocolMap map[string][]string
+	//如果用户通过 --protocols 提供了多端口协议映射（如 80:TCP,53:UDP），进行解析。
 	if o.Protocols != "" {
 		portProtocolMap, err = parseProtocols(o.Protocols)
 		if err != nil {
@@ -465,6 +479,7 @@ func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 	// via --port and the exposed object has multiple ports.
 	var portString string
 	portString = o.Ports
+	// 如果 --ports 参数未指定，尝试用 --port 的值。
 	if len(o.Ports) == 0 {
 		portString = o.Port
 	}
@@ -489,11 +504,13 @@ func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 			switch {
 			case len(protocol) == 0 && len(portProtocolMap) == 0:
 				// Default to TCP, what the flag was doing previously.
+				// 默认是tcp
 				protocol = "TCP"
 			case len(protocol) > 0 && len(portProtocolMap) > 0:
 				// User has specified the --protocol while exposing a multiprotocol resource
 				// We should stomp multiple protocols with the one specified ie. do nothing
 			case len(protocol) == 0 && len(portProtocolMap) > 0:
+				// 如果多端口且未明确命名，每个端口生成一个唯一名称（如 port-1）
 				// no --protocol and we expose a multiprotocol resource
 				protocol = "TCP" // have the default so we can stay sane
 				if exposeProtocols, found := portProtocolMap[stillPortString]; found {
@@ -531,6 +548,7 @@ func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 		},
 	}
 	targetPortString := o.TargetPort
+	// 如果用户未显式指定 --target-port，默认让 TargetPort 和暴露的端口一致：
 	if len(targetPortString) > 0 {
 		targetPort := intstr.Parse(targetPortString)
 		// Use the same target-port for every port
@@ -545,15 +563,18 @@ func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 			service.Spec.Ports[i].TargetPort = intstr.FromInt32(port)
 		}
 	}
+	// 如果用户通过 --external-ip 指定了外部 IP，配置到 Service 中。
 	if len(o.ExternalIP) > 0 {
 		service.Spec.ExternalIPs = []string{o.ExternalIP}
 	}
+	// 设置 Service 的类型，比如 ClusterIP、NodePort、LoadBalancer。
 	if len(o.Type) != 0 {
 		service.Spec.Type = corev1.ServiceType(o.Type)
 	}
 	if service.Spec.Type == corev1.ServiceTypeLoadBalancer {
 		service.Spec.LoadBalancerIP = o.LoadBalancerIP
 	}
+	// 支持的值包括 None（无亲和性）和 ClientIP（基于客户端 IP 的亲和性）
 	if len(o.SessionAffinity) != 0 {
 		switch corev1.ServiceAffinity(o.SessionAffinity) {
 		case corev1.ServiceAffinityNone:
@@ -564,6 +585,7 @@ func (o *ExposeServiceOptions) createService() (*corev1.Service, error) {
 			return nil, fmt.Errorf("unknown session affinity: %s", o.SessionAffinity)
 		}
 	}
+	// 如果 --cluster-ip 指定为 "None"，表示创建 Headless Service。
 	if len(o.ClusterIP) != 0 {
 		if o.ClusterIP == "None" {
 			service.Spec.ClusterIP = corev1.ClusterIPNone

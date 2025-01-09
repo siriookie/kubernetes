@@ -64,10 +64,13 @@ type Overrider struct {
 }
 
 func (o *Overrider) Apply(obj runtime.Object) (runtime.Object, error) {
+	// 如果没有传入任何覆盖参数（o.Options.Overrides 为空），直接返回原对象，无需进行任何操作
 	if len(o.Options.Overrides) == 0 {
 		return obj, nil
 	}
-
+	// codec 是一个编解码器，负责对对象的序列化和反序列化。
+	//它能够以不同格式（如 JSON）对 Kubernetes 资源进行转换。
+	//这里利用 UniversalDecoder 解码器处理对象的多版本兼容性。
 	codec := runtime.NewCodec(scheme.DefaultJSONEncoder(), scheme.Codecs.UniversalDecoder(scheme.Scheme.PrioritizedVersionsAllGroups()...))
 
 	var overrideType OverrideType
@@ -78,8 +81,13 @@ func (o *Overrider) Apply(obj runtime.Object) (runtime.Object, error) {
 	}
 
 	switch overrideType {
+	// OverrideTypeJSON：
+	//使用 JSON Patch 覆盖（JSONPatch）。
+	//JSON Patch 是一种定义更改 JSON 文档的标准。
 	case OverrideTypeJSON:
 		return JSONPatch(codec, obj, o.Options.Overrides)
+	//使用合并覆盖（Merge）。
+	//合并覆盖一般直接更新指定字段值，没有复杂的冲突解决逻辑。
 	case OverrideTypeMerge:
 		return Merge(codec, obj, o.Options.Overrides)
 	case OverrideTypeStrategic:

@@ -654,8 +654,10 @@ func GetValidationDirective(cmd *cobra.Command) (string, error) {
 		switch validateFlag {
 		case "strict":
 			return metav1.FieldValidationStrict, nil
+		//kubectl apply -f deployment.yaml --validate=warn
 		case "warn":
 			return metav1.FieldValidationWarn, nil
+		// kubectl apply -f deployment.yaml --validate=ignore
 		case "ignore":
 			return metav1.FieldValidationIgnore, nil
 		default:
@@ -663,6 +665,7 @@ func GetValidationDirective(cmd *cobra.Command) (string, error) {
 		}
 	}
 	// The flag was a boolean
+	// kubectl apply -f deployment.yaml --validate=true
 	if b {
 		return metav1.FieldValidationStrict, nil
 	}
@@ -701,8 +704,12 @@ func GetDryRunStrategy(cmd *cobra.Command) (DryRunStrategy, error) {
 		case cmd.Flag("dry-run").NoOptDefVal:
 			klog.Warning(`--dry-run is deprecated and can be replaced with --dry-run=client.`)
 			return DryRunClient, nil
+		// kubectl apply -f deployment.yaml --dry-run=client
+		// 表示在客户端进行 dry-run，模拟操作，但不实际向 API Server 提交请求。
 		case "client":
 			return DryRunClient, nil
+		//kubectl apply -f deployment.yaml --dry-run=server
+		// --dry-run=server：表示在服务器端进行 dry-run，实际向 API Server 提交请求，模拟操作并验证资源是否符合创建条件，但不会做任何持久化修改。
 		case "server":
 			return DryRunServer, nil
 		case "none":

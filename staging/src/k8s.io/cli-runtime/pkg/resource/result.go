@@ -110,6 +110,8 @@ func (r *Result) IntoSingleItemImplied(b *bool) *Result {
 // Infos returns an array of all of the resource infos retrieved via traversal.
 // Will attempt to traverse the entire set of visitors only once, and will return
 // a cached list on subsequent calls.
+// Infos() 是 Result 结构体的一个方法，它的作用是返回所有资源的信息，
+// 通常用于获取从服务器请求到的资源的详细信息。该方法会遍历所有的资源，并将其信息收集到一个数组中，并缓存结果，以便后续调用不需要重复遍历。
 func (r *Result) Infos() ([]*Info, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -119,6 +121,7 @@ func (r *Result) Infos() ([]*Info, error) {
 	}
 
 	infos := []*Info{}
+	// 通过调visit去发送http请求
 	err := r.visitor.Visit(func(info *Info, err error) error {
 		if err != nil {
 			return err

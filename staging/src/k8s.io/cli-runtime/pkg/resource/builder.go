@@ -248,6 +248,8 @@ func (b *Builder) VisitorConcurrency(concurrency int) *Builder {
 // will cause an error.
 // If ContinueOnError() is set prior to this method, objects on the path that are not
 // recognized will be ignored (but logged at V(2)).
+// 该方法通常用于构建 Kubernetes 资源或执行类似的操作，
+// 允许从本地文件、标准输入、URL 或其他来源加载数据，并根据需要处理命名空间和递归选项。
 func (b *Builder) FilenameParam(enforceNamespace bool, filenameOptions *FilenameOptions) *Builder {
 	if errs := filenameOptions.validate(); len(errs) > 0 {
 		b.errs = append(b.errs, errs...)
@@ -302,10 +304,12 @@ func (b *Builder) FilenameParam(enforceNamespace bool, filenameOptions *Filename
 // reads and then writes an object. Use this mode in preference to Internal unless you
 // are working with Go types directly.
 func (b *Builder) Unstructured() *Builder {
+	// 如果 b.mapper 已经被设置（说明已经有一个映射器存在），则会返回一个错误，表示不能再使用非结构化模式。
 	if b.mapper != nil {
 		b.errs = append(b.errs, fmt.Errorf("another mapper was already selected, cannot use unstructured types"))
 		return b
 	}
+	//如果没有设置过 mapper，则继续执行。
 	b.objectTyper = unstructuredscheme.NewUnstructuredObjectTyper()
 	b.mapper = &mapper{
 		localFn:      b.isLocal,
@@ -534,6 +538,7 @@ func (b *Builder) NamespaceParam(namespace string) *Builder {
 
 // DefaultNamespace instructs the builder to set the namespace value for any object found
 // to NamespaceParam() if empty.
+// DefaultNamespace 方法的主要目的是让 Builder 在创建资源时，如果没有显式指定命名空间，自动将资源的命名空间设置为默认值。
 func (b *Builder) DefaultNamespace() *Builder {
 	b.defaultNamespace = true
 	return b
@@ -560,6 +565,9 @@ func (b *Builder) RequireNamespace() *Builder {
 // RequestChunksOf attempts to load responses from the server in batches of size limit
 // to avoid long delays loading and transferring very large lists. If unset defaults to
 // no chunking.
+// 该方法的目的是通过 分批次请求 来避免一次性加载和传输非常大的数据列表时可能出现的 长时间延迟。
+// 当数据量特别大时，直接加载所有数据可能会造成响应时间过长、内存消耗过高等问题，
+// 使用分块（chunking）方式可以更高效地加载数据。
 func (b *Builder) RequestChunksOf(chunkSize int64) *Builder {
 	b.limitChunks = chunkSize
 	return b
@@ -594,6 +602,8 @@ func (b *Builder) SelectAllParam(selectAll bool) *Builder {
 // received, the types provided will be retrieved from the server (and be comma delimited).
 // When two or more arguments are received, they must be a single type and resource name(s).
 // The allowEmptySelector permits to select all the resources (via Everything func).
+// ResourceTypeOrNameArgs 是 Builder 结构体的一个方法，用于处理命令行参数或 API 请求中提供的资源类型和资源名称的组合，
+// 并根据这些参数构建请求。该方法支持传递资源类型（例如 Pod、Service 等）和资源名称（例如某个特定的 Pod 名称、Service 名称等）
 func (b *Builder) ResourceTypeOrNameArgs(allowEmptySelector bool, args ...string) *Builder {
 	args = normalizeMultipleResourcesArgs(args)
 	if ok, err := hasCombinedTypeArgs(args); ok {
@@ -858,23 +868,27 @@ func (b *Builder) visitorResult() *Result {
 	if len(b.errs) > 0 {
 		return &Result{err: utilerrors.NewAggregate(b.errs)}
 	}
-
+	//kubectl get all
 	if b.selectAll {
 		selector := labels.Everything().String()
 		b.labelSelector = &selector
 	}
 
 	// visit items specified by paths
+	// kubectl get -f <path/to/resource.yaml>
 	if len(b.paths) != 0 {
 		return b.visitByPaths()
 	}
 
 	// visit selectors
+	// kubectl get pods -l <label-selector> / kubectl get pods --field-selector <field-selector>
 	if b.labelSelector != nil || b.fieldSelector != nil {
 		return b.visitBySelector()
 	}
 
 	// visit items specified by resource and name
+	//kubectl get <resource>/<name>
+	// kubectl get pods/my-pod。
 	if len(b.resourceTuples) != 0 {
 		return b.visitByResource()
 	}
@@ -893,6 +907,7 @@ func (b *Builder) visitorResult() *Result {
 		}
 		return &Result{err: fmt.Errorf("resource(s) were provided, but no name was specified")}
 	}
+	// kubectl get
 	return &Result{err: missingResourceError}
 }
 
@@ -1167,6 +1182,8 @@ func (b *Builder) visitByPaths() *Result {
 // The visitor will respect the error behavior specified by ContinueOnError. Note that stream
 // inputs are consumed by the first execution - use Infos() or Object() on the Result to capture a list
 // for further iteration.
+// Do() 方法用于通过 Builder 配置构建一个包含处理逻辑的 Visitor，并返回一个 Result 对象。
+// 这个 Visitor 将根据 Builder 中的设置（如命名空间、错误处理策略等）来处理资源。
 func (b *Builder) Do() *Result {
 	r := b.visitorResult()
 	r.mapper = b.Mapper()

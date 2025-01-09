@@ -241,6 +241,16 @@ func IsDNS1123SubdomainWithUnderscore(value string) []string {
 	return errs
 }
 
+// 规则
+// DNS1035Label 的主要规则包括：
+//
+// 小写字母、数字、连字符：
+// 只能包含小写字母 (a-z)、数字 (0-9)、连字符 (-)。
+// 开始和结束字符：
+// 必须以小写字母或数字开头和结尾。
+// 不能以连字符 (-) 开头或结尾。
+// 长度限制：
+// 最长 63 个字符。
 const dns1035LabelFmt string = "[a-z]([-a-z0-9]*[a-z0-9])?"
 const dns1035LabelErrMsg string = "a DNS-1035 label must consist of lower case alphanumeric characters or '-', start with an alphabetic character, and end with an alphanumeric character"
 

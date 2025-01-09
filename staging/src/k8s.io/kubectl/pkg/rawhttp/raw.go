@@ -86,7 +86,8 @@ func raw(restClient *rest.RESTClient, streams genericiooptions.IOStreams, url, f
 		return err
 	}
 	defer stream.Close()
-
+	//这行代码的作用是将 stream（即 HTTP 响应的内容）复制到标准输出流 streams.Out。
+	//在命令行中，streams.Out 通常是终端屏幕，也可能是文件或其他输出目标。
 	_, err = io.Copy(streams.Out, stream)
 	if err != nil && err != io.EOF {
 		return err

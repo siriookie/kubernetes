@@ -241,6 +241,8 @@ func (o *RunOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 	return nil
 }
 
+// kubectl run 是用来快速创建一个 Pod 的命令，提供运行容器的基本能力
+// kubectl run my-nginx --image=nginx:1.21
 func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) error {
 	// Let kubectl run follow rules for `--`, see #13004 issue
 	if len(args) == 0 || o.ArgsLenAtDash == 0 {
@@ -253,6 +255,7 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 	}
 
 	// validate image name
+	//--image 是必填参数。如果未提供或格式错误，直接返回错误
 	if o.Image == "" {
 		return fmt.Errorf("--image is required")
 	}
@@ -260,10 +263,11 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 	if !reference.ReferenceRegexp.MatchString(o.Image) {
 		return fmt.Errorf("Invalid image name %q: %v", o.Image, reference.ErrReferenceInvalidFormat)
 	}
-
+	//校验 -t/--tty 和 -i/--stdin 参数是否搭配正确。
 	if o.TTY && !o.Interactive {
 		return cmdutil.UsageErrorf(cmd, "-i/--stdin is required for containers with -t/--tty=true")
 	}
+	// 如果启用了 --expose 参数，则必须提供 --port。
 	if o.Expose && len(o.Port) == 0 {
 		return cmdutil.UsageErrorf(cmd, "--port must be set when exposing a service")
 	}
@@ -272,11 +276,12 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 	if err != nil {
 		return err
 	}
+	// 设置restart policy
 	restartPolicy, err := getRestartPolicy(cmd, o.Interactive)
 	if err != nil {
 		return err
 	}
-
+	//检查 --rm 和 --attach 参数的搭配是否合理。
 	remove := cmdutil.GetFlagBool(cmd, "rm")
 	if !o.Attach && remove {
 		return cmdutil.UsageErrorf(cmd, "--rm should only be used for attached containers")
@@ -289,7 +294,8 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 	if err := verifyImagePullPolicy(cmd); err != nil {
 		return err
 	}
-
+	//这段代码从生成器中获取了一个默认的 Pod 生成器（RunPodV1GeneratorName），
+	//生成器会根据用户的输入参数生成一个 Pod 的定义。
 	generators := generateversioned.GeneratorFn("run")
 	generator, found := generators[generateversioned.RunPodV1GeneratorName]
 	if !found {
@@ -297,6 +303,7 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 	}
 
 	names := generator.ParamNames()
+	// 填充pod的信息
 	params := generate.MakeParams(cmd, names)
 	params["name"] = args[0]
 	if len(args) > 1 {
@@ -307,6 +314,7 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 	params["env"] = cmdutil.GetFlagStringArray(cmd, "env")
 
 	var createdObjects = []*RunObject{}
+	// 实际调用 createGeneratedObject 方法，生成并应用 Pod 对象。
 	runObject, err := o.createGeneratedObject(f, cmd, generator, names, params, o.NewOverrider(&corev1.Pod{}))
 	if err != nil {
 		return err
@@ -315,6 +323,7 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 
 	allErrs := []error{}
 	if o.Expose {
+		//如果传入了 --expose 参数，则生成并应用对应的 Service 资源
 		serviceRunObject, err := o.generateService(f, cmd, params)
 		if err != nil {
 			allErrs = append(allErrs, err)
@@ -322,7 +331,7 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 			createdObjects = append(createdObjects, serviceRunObject)
 		}
 	}
-
+	// 如果指定了 --attach 参数，kubectl 会等待 Pod 启动，并将用户的输入/输出连接到容器：
 	if o.Attach {
 		if remove {
 			defer o.removeCreatedObjects(f, createdObjects)
@@ -371,6 +380,7 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 			if restartPolicy == corev1.RestartPolicyOnFailure {
 				exitCondition = podSucceeded
 			}
+			// 等待 Pod 就绪： 在 attach 之前，它会根据 restartPolicy 等配置，等待 Pod 进入正确的运行状态（比如启动成功或者失败）。
 			pod, err = waitForPod(clientset.CoreV1(), attachablePod.Namespace, attachablePod.Name, opts.GetPodTimeout, exitCondition)
 			if err != nil {
 				return err
@@ -589,17 +599,21 @@ func (o *RunOptions) generateService(f cmdutil.Factory, cmd *cobra.Command, para
 }
 
 func (o *RunOptions) createGeneratedObject(f cmdutil.Factory, cmd *cobra.Command, generator generate.Generator, names []generate.GeneratorParam, params map[string]interface{}, overrider *cmdutil.Overrider) (*RunObject, error) {
+	// 验证用户通过命令行传递的参数是否正确、完整，例如镜像名、端口号等
 	err := generate.ValidateParams(names, params)
 	if err != nil {
 		return nil, err
 	}
 
 	// TODO: Validate flag usage against selected generator. More tricky since --expose was added.
+	//根据用户输入的参数调用生成器（generate.Generator）生成资源对象。
+	//例如：kubectl run mypod --image=nginx 会调用生成 Pod 的生成器。
 	obj, err := generator.Generate(params)
 	if err != nil {
 		return nil, err
 	}
-
+	//确定资源类型，例如 Pod 的 GVK（Group、Version、Kind）。
+	//查找 API Server 中该资源的 REST 映射（REST API 路径、操作方式）。
 	mapper, err := f.ToRESTMapper()
 	if err != nil {
 		return nil, err
@@ -615,18 +629,23 @@ func (o *RunOptions) createGeneratedObject(f cmdutil.Factory, cmd *cobra.Command
 	}
 
 	if overrider != nil {
+		// 目的：支持对生成的对象进行修改，比如调整特定字段。
+		//典型应用场景：根据用户指定的额外参数修改生成的 Pod 属性
 		obj, err = overrider.Apply(obj)
 		if err != nil {
 			return nil, err
 		}
 	}
-
+	//将该操作记录下来，用于审计和可追溯性。
 	if err := o.Recorder.Record(obj); err != nil {
 		klog.V(4).Infof("error recording current command: %v", err)
 	}
 
 	actualObj := obj
 	if o.DryRunStrategy != cmdutil.DryRunClient {
+		// 如果用户使用了 --dry-run 参数：
+		//Client 模式：不会发送请求到 API Server，仅模拟资源创建。
+		//Server 模式：将请求发送到 API Server，但不实际创建资源（只验证合法性）
 		if err := util.CreateOrUpdateAnnotation(cmdutil.GetFlagBool(cmd, cmdutil.ApplyAnnotationsFlag), obj, scheme.DefaultJSONEncoder()); err != nil {
 			return nil, err
 		}

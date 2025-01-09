@@ -84,7 +84,7 @@ func UntilWithoutRetry(ctx context.Context, watcher watch.Interface, conditions 
 				if done {
 					break ConditionSucceeded
 				}
-
+			// close的时候会接收到默认的0值并且不会阻塞
 			case <-ctx.Done():
 				return lastEvent, wait.ErrWaitTimeout
 			}
@@ -125,6 +125,14 @@ func Until(ctx context.Context, initialResourceVersion string, watcherClient cac
 // particular object, not between more of them even it's the same resource.
 // The most frequent usage would be a command that needs to watch the "state of the world" and should't fail, like:
 // waiting for object reaching a state, "small" controllers, ...
+// UntilWithSync 从 lw 创建一个 informer，当存储同步时可选地检查先决条件，并监视输出直到每个提供的条件成功，这种方式与 UntilWithoutRetry 函数相同（见上文）。
+//
+// UntilWithSync 可以处理所有类型的错误，例如 API 超时、连接丢失和“资源版本过旧”。这是唯一能够从“资源版本过旧”中恢复的函数，而 Until 和 UntilWithoutRetry 在这种情况下会失败。
+// 另一方面，它无法提供像使用简单的 Watch 方法与 Until 一样强的保证。它可能会跳过某些中间事件，如果监视功能失败，但将重新列出以恢复，并且在恢复后你总是会收到事件，如果有变化发生。
+//
+// 此外，基于当前实现的 DeltaFIFO，你收到的事件的顺序只对特定对象有保障，而对于同一资源中的多个对象则没有保证。
+//
+// 最常见的用法是需要监视“世界状态”的命令，应该不会失败，例如：等待对象达到某个状态、小型控制器等。
 func UntilWithSync(ctx context.Context, lw cache.ListerWatcher, objType runtime.Object, precondition PreconditionFunc, conditions ...ConditionFunc) (*watch.Event, error) {
 	indexer, informer, watcher, done := NewIndexerInformerWatcher(lw, objType)
 	// We need to wait for the internal informers to fully stop so it's easier to reason about

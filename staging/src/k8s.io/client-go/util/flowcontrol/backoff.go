@@ -98,10 +98,14 @@ func (p *Backoff) Next(id string, eventTime time.Time) {
 	p.Lock()
 	defer p.Unlock()
 	entry, ok := p.perItemBackoff[id]
+	// 条目不存在或已过期: 如果没有找到该 id 对应的条目，或者该条目的退避时间已经过期（hasExpired 方法判断），
+	//就初始化该条目，并且加入扰动（jitter）调整退避时间。
 	if !ok || p.hasExpired(eventTime, entry.lastUpdate, p.maxDuration) {
 		entry = p.initEntryUnsafe(id)
 		entry.backoff += p.jitter(entry.backoff)
 	} else {
+		//条目存在且未过期: 如果条目存在且未过期，采用 指数退避（entry.backoff * 2）来增加退避时间。
+		//然后加上扰动值（p.jitter(entry.backoff)），最后确保退避时间不会超过最大时长（p.maxDuration）。
 		delay := entry.backoff * 2       // exponential
 		delay += p.jitter(entry.backoff) // add some jitter to the delay
 		entry.backoff = min(delay, p.maxDuration)
@@ -180,6 +184,8 @@ func (p *Backoff) jitter(delay time.Duration) time.Duration {
 }
 
 // Unless an alternate function is provided, after 2*maxDuration we restart the backoff factor to the beginning
+// 判断退避时间是否过期: 如果当前的 eventTime 和上次更新时间 lastUpdate 之间的间隔超过了最大时长 maxDuration 的两倍，
+// 则认为退避时间已经过期。
 func (p *Backoff) hasExpired(eventTime time.Time, lastUpdate time.Time, maxDuration time.Duration) bool {
 	if p.HasExpiredFunc != nil {
 		return p.HasExpiredFunc(eventTime, lastUpdate, maxDuration)

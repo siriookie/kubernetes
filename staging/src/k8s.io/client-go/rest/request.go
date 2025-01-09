@@ -647,6 +647,7 @@ func (r *Request) tryThrottleWithInfo(ctx context.Context, retryInfo string) err
 	if err != nil {
 		err = fmt.Errorf("client rate limiter Wait returned an error: %w", err)
 	}
+	// time.Since(now) 计算自调用 Wait 方法以来的延迟（即等待的时间）。
 	latency := time.Since(now)
 
 	var message string
@@ -767,7 +768,10 @@ func (r *Request) watchInternal(ctx context.Context) (watch.Interface, runtime.D
 		if err := retry.Before(ctx, r); err != nil {
 			return nil, nil, retry.WrapPreviousError(err)
 		}
-
+		//实际的长连接维护是通过 HTTP/1.1 的 chunked transfer encoding（分块传输编码）实现的：
+		//// 请求头中会包含:
+		//// Connection: keep-alive
+		//// Transfer-Encoding: chunked
 		req, err := r.newHTTPRequest(ctx)
 		if err != nil {
 			return nil, nil, err
@@ -1037,7 +1041,7 @@ func (r *Request) Stream(ctx context.Context) (io.ReadCloser, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-
+	// 调用 tryThrottle 方法，检查是否需要控制请求的速率。如果需要限流，则返回错误。
 	if err := r.tryThrottle(ctx); err != nil {
 		return nil, err
 	}
@@ -1050,6 +1054,7 @@ func (r *Request) Stream(ctx context.Context) (io.ReadCloser, error) {
 	retry := r.retryFn(r.maxRetries)
 	url := r.URL().String()
 	for {
+		// 做重试前的检查，限流，延迟发送等等
 		if err := retry.Before(ctx, r); err != nil {
 			return nil, err
 		}
@@ -1068,6 +1073,7 @@ func (r *Request) Stream(ctx context.Context) (io.ReadCloser, error) {
 		switch {
 		case (resp.StatusCode >= 200) && (resp.StatusCode < 300):
 			handleWarnings(resp.Header, r.warningHandler)
+			// 返回的是 HTTP 响应体的流（io.ReadCloser 类型）。上层代码可以使用这个流来逐步读取响应体的数据
 			return resp.Body, nil
 
 		default:

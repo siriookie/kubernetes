@@ -158,7 +158,7 @@ func (o *CreateOptions) Validate() error {
 	if err := o.FilenameOptions.RequireFilenameOrKustomize(); err != nil {
 		return err
 	}
-
+	//确保了用户在使用 --raw 参数时遵循了多个规则，避免了参数之间的冲突，并且确保了提供的 URL 或文件路径是有效的。
 	if len(o.Raw) > 0 {
 		if o.EditBeforeCreate {
 			return fmt.Errorf("--raw and --edit are mutually exclusive")
@@ -193,6 +193,7 @@ func (o *CreateOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []s
 	}
 	var err error
 	o.RecordFlags.Complete(cmd)
+	// 处理与记录（recording）相关的命令行标志（flags），并将其转换为一个可用的 Recorder 对象
 	o.Recorder, err = o.RecordFlags.ToRecorder()
 	if err != nil {
 		return err
@@ -230,9 +231,10 @@ func (o *CreateOptions) RunCreate(f cmdutil.Factory, cmd *cobra.Command) error {
 		if err != nil {
 			return err
 		}
+		// 直接去发post请求
 		return rawhttp.RawPost(restClient, o.IOStreams, o.Raw, o.FilenameOptions.Filenames[0])
 	}
-
+	// 如果设置了 --edit 参数，代码会进入此逻辑。--edit 参数表示在创建资源之前打开编辑器，用户可以在编辑器中修改资源。
 	if o.EditBeforeCreate {
 		return RunEditOnCreate(f, o.PrintFlags, o.RecordFlags, o.IOStreams, cmd, &o.FilenameOptions, o.fieldManager)
 	}
@@ -273,6 +275,12 @@ func (o *CreateOptions) RunCreate(f cmdutil.Factory, cmd *cobra.Command) error {
 		if err := o.Recorder.Record(info.Object); err != nil {
 			klog.V(4).Infof("error recording current command: %v", err)
 		}
+		//Visit 方法会遍历所有待创建的资源，每个资源会传递给 info。如果发生错误，会执行 err 的处理。
+		//对每个资源进行以下操作：
+		//创建或更新注解：如果需要，创建或更新资源的注解（例如记录来源信息）。
+		//记录命令：记录资源创建的命令。
+		//DryRun：如果启用了 Dry Run，则只进行验证而不实际创建资源。DryRunStrategy 判断是客户端还是服务端 Dry Run。
+		//实际创建资源：使用 resource.NewHelper 创建资源。如果 Dry Run 不是启用的情况，实际向 Kubernetes API Server 发送创建请求。
 
 		if o.DryRunStrategy != cmdutil.DryRunClient {
 			obj, err := resource.

@@ -86,6 +86,7 @@ func (b *URLBackoff) baseUrlKey(rawurl *url.URL) string {
 func (b *URLBackoff) UpdateBackoff(actualUrl *url.URL, err error, responseCode int) {
 	// range for retry counts that we store is [0,13]
 	if responseCode > maxResponseCode || serverIsOverloadedSet.Has(responseCode) {
+		// 找到下一个backoff的时间
 		b.Backoff.Next(b.baseUrlKey(actualUrl), b.Backoff.Clock.Now())
 		return
 	} else if responseCode >= 300 || err != nil {

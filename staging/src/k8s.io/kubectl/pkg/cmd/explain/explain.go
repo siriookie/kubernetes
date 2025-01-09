@@ -92,6 +92,7 @@ func NewExplainOptions(parent string, streams genericiooptions.IOStreams) *Expla
 }
 
 // NewCmdExplain returns a cobra command for swagger docs
+// 这个命令通过 kubectl explain 来展示某个资源的 API 文档
 func NewCmdExplain(parent string, f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewExplainOptions(parent, streams)
 

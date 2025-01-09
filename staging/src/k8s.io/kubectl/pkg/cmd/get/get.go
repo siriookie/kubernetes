@@ -172,7 +172,7 @@ func NewCmdGet(parent string, f cmdutil.Factory, streams genericiooptions.IOStre
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
 			cmdutil.CheckErr(o.Validate())
-			cmdutil.CheckErr(o.Run(f, args))
+			cmdutil.CheckErr(o.Run(f, args)) /* get指令实现的逻辑都在这里面了*/
 		},
 		SuggestFor: []string{"list", "ps"},
 	}
@@ -453,6 +453,7 @@ func (o *GetOptions) transformRequests(req *rest.Request) {
 // Run performs the get operation.
 // TODO: remove the need to pass these arguments, like other commands.
 func (o *GetOptions) Run(f cmdutil.Factory, args []string) error {
+	// 如果是指定了url啥啥的，就直接调用rawhttp.RawGet
 	if len(o.Raw) > 0 {
 		restClient, err := f.RESTClient()
 		if err != nil {
@@ -460,10 +461,10 @@ func (o *GetOptions) Run(f cmdutil.Factory, args []string) error {
 		}
 		return rawhttp.RawGet(restClient, o.IOStreams, o.Raw)
 	}
+	// 先list，再根据版本号去watch 然后输出到控制台
 	if o.Watch || o.WatchOnly {
 		return o.watch(f, args)
 	}
-
 	chunkSize := o.ChunkSize
 	if len(o.SortBy) > 0 {
 		// TODO(juanvallejo): in the future, we could have the client use chunking
@@ -526,8 +527,9 @@ func (o *GetOptions) Run(f cmdutil.Factory, args []string) error {
 	trackingWriter := &trackingWriterWrapper{Delegate: o.Out}
 	// output an empty line separating output
 	separatorWriter := &separatorWriterWrapper{Delegate: trackingWriter}
-
+	//这一行初始化了一个新的表格写入器 w，它会被用来按表格形式打印资源的内容。separatorWriter 是一个提供给写入器的参数，可能用于管理输出的分隔符。
 	w := printers.GetNewTabWriter(separatorWriter)
+	// 判断是否需要考虑命名空间。如果不打印所有命名空间（o.AllNamespaces 为 false），则默认资源是命名空间相关的
 	allResourcesNamespaced := !o.AllNamespaces
 	for ix := range objs {
 		var mapping *meta.RESTMapping
@@ -546,7 +548,7 @@ func (o *GetOptions) Run(f cmdutil.Factory, args []string) error {
 		if mapping != nil && mapping.Scope.Name() == meta.RESTScopeNameRoot {
 			printWithNamespace = false
 		}
-
+		//检查是否需要创建一个新的打印器（printer），如果当前的资源映射与上一个资源映射不同，则需要刷新表格并设置列宽。
 		if shouldGetNewPrinterForMapping(printer, lastMapping, mapping) {
 			w.Flush()
 			w.SetRememberedWidths(nil)
@@ -556,10 +558,11 @@ func (o *GetOptions) Run(f cmdutil.Factory, args []string) error {
 			// 1) it's not the first resource group
 			// 2) it has row header
 			// 3) we've written output since the last time we started a new set of headers
+			//如果不是第一个资源组，并且已经输出过内容，则添加分隔行。
 			if lastMapping != nil && !o.NoHeaders && trackingWriter.Written > 0 {
 				separatorWriter.SetReady(true)
 			}
-
+			//使用 o.ToPrinter 方法生成一个新的打印器，并根据资源映射和是否打印命名空间等条件配置它。如果发生错误，则记录错误并继续处理下一个资源。
 			printer, err = o.ToPrinter(mapping, nil, printWithNamespace, printWithKind)
 			if err != nil {
 				if !errs.Has(err.Error()) {
@@ -574,6 +577,7 @@ func (o *GetOptions) Run(f cmdutil.Factory, args []string) error {
 
 		printer.PrintObj(info.Object, w)
 	}
+	//确保所有的内容都已被写入输出
 	w.Flush()
 	if trackingWriter.Written == 0 && !o.IgnoreNotFound && len(allErrs) == 0 {
 		// if we wrote no output, and had no errors, and are not ignoring NotFound, be sure we output something
@@ -621,7 +625,7 @@ func (o *GetOptions) watch(f cmdutil.Factory, args []string) error {
 	r := f.NewBuilder().
 		Unstructured().
 		NamespaceParam(o.Namespace).DefaultNamespace().AllNamespaces(o.AllNamespaces).
-		FilenameParam(o.ExplicitNamespace, &o.FilenameOptions).
+		FilenameParam(o.ExplicitNamespace, &o.FilenameOptions). /* 要watch的file*/
 		LabelSelectorParam(o.LabelSelector).
 		FieldSelectorParam(o.FieldSelector).
 		RequestChunksOf(o.ChunkSize).
@@ -657,6 +661,9 @@ func (o *GetOptions) watch(f cmdutil.Factory, args []string) error {
 	// will return an initial watch event.  Starting form ~now, rather
 	// the rv of the object will insure that we start the watch from
 	// inside the watch window, which the rv of the object might not be.
+	// 获取资源的版本号（resourceVersion）。对于列表类型的资源，
+	//资源版本号通常是当前时刻（~now），并且没有初始的事件。
+	//如果是列表类型的资源，会尝试获取列表的资源版本号。
 	rv := "0"
 	isList := meta.IsListType(obj)
 	if isList {
@@ -695,6 +702,7 @@ func (o *GetOptions) watch(f cmdutil.Factory, args []string) error {
 	}
 
 	// print watched changes
+	//启动资源的 watch，传入资源版本号。这样就能从指定的版本开始监听后续的事件。
 	w, err := r.Watch(rv)
 	if err != nil {
 		return err
@@ -703,6 +711,7 @@ func (o *GetOptions) watch(f cmdutil.Factory, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	intr := interrupt.New(nil, cancel)
+	//将流中的事件输出到控制台（或其他 writer 目标）中。
 	intr.Run(func() error {
 		_, err := watchtools.UntilWithoutRetry(ctx, w, func(e watch.Event) (bool, error) {
 			objToPrint := e.Object
@@ -823,6 +832,8 @@ func shouldGetNewPrinterForMapping(printer printers.ResourcePrinter, lastMapping
 	return printer == nil || lastMapping == nil || mapping == nil || mapping.Resource != lastMapping.Resource
 }
 
+// multipleGVKsRequested 用来判断资源列表中是否包含多个不同的资源类型。如果列表中的资源类型不一致（即 GVK 不同），
+// 它会返回 true；如果所有资源的类型和版本相同，返回 false。
 func multipleGVKsRequested(infos []*resource.Info) bool {
 	if len(infos) < 2 {
 		return false

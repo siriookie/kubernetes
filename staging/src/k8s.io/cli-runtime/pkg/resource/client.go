@@ -57,6 +57,9 @@ func (clientConfigFn ClientConfigFunc) unstructuredClientForGroupVersion(gv sche
 	return rest.RESTClientFor(cfg)
 }
 
+// 这个 withStdinUnavailable 方法接收一个 stdinUnavailable 参数，并返回一个新的 ClientConfigFunc。
+// 新的函数会调用原始的 clientConfigFn，并在返回的 rest.Config 中添加有关标准输入不可用的信息。
+// 这通常用于配置 Kubernetes 客户端，特别是在某些情况下需要禁用标准输入（例如，通过文件或其他方式读取资源清单时）
 func (clientConfigFn ClientConfigFunc) withStdinUnavailable(stdinUnavailable bool) ClientConfigFunc {
 	return func() (*rest.Config, error) {
 		cfg, err := clientConfigFn()

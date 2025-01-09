@@ -54,6 +54,7 @@ func (r *Selector) Visit(fn VisitorFunc) error {
 		Limit:         r.LimitChunks,
 	}
 	return FollowContinue(&initialOpts, func(options metav1.ListOptions) (runtime.Object, error) {
+		// 发送http请求的地方
 		list, err := helper.List(
 			r.Namespace,
 			r.ResourceMapping().GroupVersionKind.GroupVersion().String(),

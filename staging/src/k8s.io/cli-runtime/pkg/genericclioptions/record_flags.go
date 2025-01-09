@@ -176,6 +176,8 @@ func parseCommandArguments(cmd *cobra.Command) string {
 	}
 
 	flags := ""
+	//如果标志有 "classified" 注解（通过 flag.Annotations["classified"] 判断），就将该标志的值替换为 "CLASSIFIED"。
+	//这个逻辑是为了保护敏感数据（例如，密码、密钥等）不被输出。否则，正常显示标志及其值。
 	parseFunc := func(flag *pflag.Flag, value string) error {
 		flags = flags + " --" + flag.Name
 		if set, ok := flag.Annotations["classified"]; !ok || len(set) == 0 {

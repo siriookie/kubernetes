@@ -132,6 +132,9 @@ func New(c *Config) Controller {
 // Run begins processing items, and will continue until a value is sent down stopCh or it is closed.
 // It's an error to call Run more than once.
 // Run blocks; call via go.
+// Run 开始处理项，并将持续进行，直到 stopCh 发送值或被关闭为止。
+// 调用 Run 超过一次是错误的。
+// Run 是一个阻塞操作；请通过 go 协程调用。
 func (c *controller) Run(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	go func() {
@@ -456,6 +459,14 @@ func NewInformer(
 //   - indexers is the indexer for the received object type.
 //
 // Deprecated: Use NewInformerWithOptions instead.
+// NewIndexerInformer 返回一个 Indexer 和一个 Controller，用来填充索引并提供事件通知。它应该仅用于 Get 和 List 操作；Add、Modify 和 Delete 操作会导致事件通知出现问题。
+//
+// 参数说明
+// lw：提供资源源的列出和监视功能（List 和 Watch）。你想要监听的资源类型通过这些函数来获得。
+// objType：你期望接收的对象类型。
+// resyncPeriod：如果不为零，这会指定重新列出资源的频率（即使资源没有发生变化，也会触发 OnUpdate 调用）。如果为零，则在资源源关闭监听、超时或控制器停止时才会延迟进行重新列出。
+// h：将事件通知发送到的对象。
+// indexers：用于接收的对象类型的索引器。
 func NewIndexerInformer(
 	lw ListerWatcher,
 	objType runtime.Object,

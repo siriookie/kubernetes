@@ -391,23 +391,26 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 	}
 
 	// Avoid import cycle by setting ValidArgsFunction here instead of in NewCmdGet()
-	// 创建一个 get 命令，用于查询 Kubernetes 资源，并为其配置自动补全功能。
+	// 创建一个 get 命令，用于查询 Kubernetes 资源
 	getCmd := get.NewCmdGet("kubectl", f, o.IOStreams)
+	// 配置自动补全功能
 	getCmd.ValidArgsFunction = utilcomp.ResourceTypeAndNameCompletionFunc(f)
 	//定义多个命令组，每个命令组下包含不同的子命令。例如：
 	//Basic Commands (Beginner)：包含 create、expose、run 等基础命令。
 	//Basic Commands (Intermediate)：包含 explain、get、edit 等中级命令
 	groups := templates.CommandGroups{
 		{
+			//Beginner
 			Message: "Basic Commands (Beginner):",
 			Commands: []*cobra.Command{
-				create.NewCmdCreate(f, o.IOStreams),
-				expose.NewCmdExposeService(f, o.IOStreams),
-				run.NewCmdRun(f, o.IOStreams),
+				create.NewCmdCreate(f, o.IOStreams),        // 发送post请求create resource
+				expose.NewCmdExposeService(f, o.IOStreams), // 发送post请求调用create resource 创建一个service
+				run.NewCmdRun(f, o.IOStreams),              // 发送请求create resource 然后如果要执行请求的话会waitpod 等待pod启动
 				set.NewCmdSet(f, o.IOStreams),
 			},
 		},
 		{
+			//中级的
 			Message: "Basic Commands (Intermediate):",
 			Commands: []*cobra.Command{
 				explain.NewCmdExplain("kubectl", f, o.IOStreams),

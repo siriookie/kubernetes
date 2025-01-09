@@ -66,13 +66,18 @@ func NewStreamWatcher(d Decoder, r Reporter) *StreamWatcher {
 		// It's easy for a consumer to add buffering via an extra
 		// goroutine/channel, but impossible for them to remove it,
 		// so nonbuffered is better.
+		// 消费者可以通过额外的 goroutine/通道轻松地添加缓冲，但无法移除它，因此无缓冲的方式更好
 		result: make(chan Event),
 		// If the watcher is externally stopped there is no receiver anymore
 		// and the send operations on the result channel, especially the
 		// error reporting might block forever.
 		// Therefore a dedicated stop channel is used to resolve this blocking.
+		//当一个观察者（watcher）被外部停止时，结果通道（result channel）上不再有接收者。
+		//这意味着对该通道的发送操作（特别是用于报告错误的操作）可能会导致程序永远阻塞，因为没有地方可以接收这些发送的数据。
+		//为了解决这个问题，使用一个专门的停止通道（stop channel）。这个停止通道可以用来通知发送操作停止，避免在没有接收者的情况下发生阻塞。
 		done: make(chan struct{}),
 	}
+	// 开启一个协程 接收数据
 	go sw.receive()
 	return sw
 }
@@ -88,6 +93,10 @@ func (sw *StreamWatcher) Stop() {
 	sw.Lock()
 	defer sw.Unlock()
 	// closing a closed channel always panics, therefore check before closing
+	//接收已关闭通道：
+	//如果一个通道已经关闭，任何对该通道的接收操作都会立即返回通道中的零值，而不会阻塞。这意味着你可以在关闭的通道上进行接收，而不会导致程序挂起。
+	//非阻塞接收：
+	//在 select 语句中，case <-sw.done: 将尝试从 sw.done 通道接收数据。如果 sw.done 已经关闭，这个接收操作将立即成功，并且不会阻塞。这使得可以通过这个操作来判断通道是否已关闭。
 	select {
 	case <-sw.done:
 	default:

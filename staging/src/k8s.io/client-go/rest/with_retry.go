@@ -195,6 +195,7 @@ func (r *withRetry) IsNextRetry(ctx context.Context, restReq *Request, httpReq *
 func (r *withRetry) Before(ctx context.Context, request *Request) error {
 	// If the request context is already canceled there
 	// is no need to retry.
+	// 检查请求上下文是否已取消 (ctx.Err() != nil)
 	if ctx.Err() != nil {
 		r.trackPreviousError(ctx.Err())
 		return ctx.Err()
@@ -205,16 +206,27 @@ func (r *withRetry) Before(ctx context.Context, request *Request) error {
 	// from the (response, err) tuple from the last attempt, so 'Before'
 	// can apply these retry after parameters prior to the next attempt.
 	// 'r.retryAfter == nil' indicates that this is the very first attempt.
+	//r.retryAfter 表示从上次尝试的（响应，错误）元组中计算得出的重试延迟参数
+	//，因此在下一次尝试之前，'Before' 方法可以应用这些重试延迟参数。
+	//'r.retryAfter == nil' 表示这是第一次尝试。
 	if r.retryAfter == nil {
 		// we do a backoff sleep before the first attempt is made,
 		// (preserving current behavior).
+		// 如果要延迟发送
 		if request.backoff != nil {
+			// time.sleep
 			request.backoff.Sleep(request.backoff.CalculateBackoff(url))
 		}
 		return nil
 	}
 
 	// if we are here, we have made attempt(s) at least once before.
+	//如果 r.retryAfter != nil，说明这是一次重试请求。
+	//它使用前一次请求的响应或错误（可能包含 Retry-After 参数）来决定延迟。
+	//这里首先计算请求的回退时间（delay），
+	//并检查是否存在 Retry-After 头部中的 Wait 参数。
+	//如果 Wait 时间比计算出的延迟时间要长，就使用 Wait，否则使用计算出来的 delay。
+	//然后请求线程会 sleep 等待这个延迟时间。
 	if request.backoff != nil {
 		delay := request.backoff.CalculateBackoff(url)
 		if r.retryAfter.Wait > delay {
@@ -226,6 +238,7 @@ func (r *withRetry) Before(ctx context.Context, request *Request) error {
 	// We are retrying the request that we already send to
 	// apiserver at least once before. This request should
 	// also be throttled with the client-internal rate limiter.
+	// 我们正在重试已经发送过一次给 API 服务器的请求。这个请求也应该通过客户端内部的速率限制器进行限制。
 	if err := request.tryThrottleWithInfo(ctx, r.retryAfter.Reason); err != nil {
 		r.trackPreviousError(ctx.Err())
 		return err
@@ -242,6 +255,9 @@ func (r *withRetry) After(ctx context.Context, request *Request, resp *http.Resp
 	// parameters calculated from the (response, err) tuple from
 	// attempt N-1, so r.retryAfter is outdated and should not be
 	// referred to here.
+	// 'After' 会在每次尝试后立即调用，让我们把刚刚进行的尝试标记为尝试 'N'。
+	//r.retryAfter 当前的值表示的是从尝试 N-1 得到的（响应，错误）元组中计算出的重试参数，
+	//所以 r.retryAfter 已经过时，不应该在这里引用。
 	isRetry := r.retryAfter != nil
 	r.retryAfter = nil
 
@@ -252,14 +268,17 @@ func (r *withRetry) After(ctx context.Context, request *Request, resp *http.Resp
 	//    rest_client_request_retries_total metric.
 	updateRequestResultMetric(ctx, request, resp, err)
 	if isRetry {
+		//如果尝试的次数大于 1，那么会对这个请求进行重试次数的统计。
 		// this is attempt 2 or later
 		updateRequestRetryMetric(ctx, request, resp, err)
 	}
 
 	if request.c.base != nil {
+		//如果是错误（err != nil），则根据错误更新退避策略。
 		if err != nil {
 			request.backoff.UpdateBackoff(request.URL(), err, 0)
 		} else {
+			//如果没有错误，使用响应的状态码更新策略。
 			request.backoff.UpdateBackoff(request.URL(), err, resp.StatusCode)
 		}
 	}

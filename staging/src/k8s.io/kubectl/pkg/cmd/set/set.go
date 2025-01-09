@@ -34,6 +34,8 @@ var (
 )
 
 // NewCmdSet returns an initialized Command instance for 'set' sub command
+// 示例： 更新名为 my-deployment 的 nginx 容器的镜像为 nginx:1.16：
+// kubectl set image deployment/my-deployment nginx=nginx:1.16
 func NewCmdSet(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:                   "set SUBCOMMAND",
@@ -44,12 +46,12 @@ func NewCmdSet(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Com
 	}
 
 	// add subcommands
-	cmd.AddCommand(NewCmdImage(f, streams))
-	cmd.AddCommand(NewCmdResources(f, streams))
-	cmd.AddCommand(NewCmdSelector(f, streams))
-	cmd.AddCommand(NewCmdSubject(f, streams))
-	cmd.AddCommand(NewCmdServiceAccount(f, streams))
-	cmd.AddCommand(NewCmdEnv(f, streams))
+	cmd.AddCommand(NewCmdImage(f, streams))          //kubectl set image deployment/my-deployment nginx=nginx:1.16
+	cmd.AddCommand(NewCmdResources(f, streams))      //kubectl set resources deployment/my-deployment --limits=cpu=1,memory=512Mi
+	cmd.AddCommand(NewCmdSelector(f, streams))       //kubectl set selector service/my-service environment=production
+	cmd.AddCommand(NewCmdSubject(f, streams))        //kubectl set subject rolebinding my-rolebinding --user=john
+	cmd.AddCommand(NewCmdServiceAccount(f, streams)) //kubectl set serviceaccount deployment my-deployment my-serviceaccount
+	cmd.AddCommand(NewCmdEnv(f, streams))            //kubectl set env deployment/my-deployment FOO=bar
 
 	return cmd
 }
