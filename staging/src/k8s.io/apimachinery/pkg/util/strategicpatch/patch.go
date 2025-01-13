@@ -167,6 +167,16 @@ func CreateTwoWayMergeMapPatchUsingLookupPatchMeta(original, modified JSONMap, s
 // - IFF list of primitives && merge strategy - use parallel deletion list
 // - IFF list of maps or primitives with replace strategy (default) - set patch value to the value in modified
 // - Build $retainKeys directive for fields with retainKeys patch strategy
+// 返回一个（递归的）战略合并补丁，应用于原始数据时会生成修改后的结果。包括：
+//
+// 将修改后的补丁中存在、原始数据中缺失的字段添加到补丁中
+// 将修改后的补丁中存在、原始数据中值不同的字段设置到补丁中
+// 删除原始数据中存在、修改后的数据中缺失的字段
+// 如果是映射字段，将其设置为 nil
+// 如果是映射列表且有合并策略，使用 deleteDirective 处理元素
+// 如果是原始数据列表且有合并策略，使用并行删除列表
+// 如果是映射或原始数据列表且采用替换策略（默认），则将补丁值设置为修改后的值
+// 为采用 retainKeys 合并策略的字段构建 $retainKeys 指令
 func diffMaps(original, modified map[string]interface{}, schema LookupPatchMeta, diffOptions DiffOptions) (map[string]interface{}, error) {
 	patch := map[string]interface{}{}
 
@@ -176,10 +186,11 @@ func diffMaps(original, modified map[string]interface{}, schema LookupPatchMeta,
 	// Compare each value in the modified map against the value in the original map
 	for key, modifiedValue := range modified {
 		// Get the underlying type for pointers
+		//保留键
 		if diffOptions.BuildRetainKeysDirective && modifiedValue != nil {
 			retainKeysList = append(retainKeysList, key)
 		}
-
+		//如果在 original 中找不到对应的键，则说明该键是新增的，按需添加到补丁中。
 		originalValue, ok := original[key]
 		if !ok {
 			// Key was added, so add to patch
@@ -188,7 +199,7 @@ func diffMaps(original, modified map[string]interface{}, schema LookupPatchMeta,
 			}
 			continue
 		}
-
+		// 对于需要特别处理的键（可能包含补丁指令），调用 handleDirectiveMarker
 		// The patch may have a patch directive
 		// TODO: figure out if we need this. This shouldn't be needed by apply. When would the original map have patch directives in it?
 		foundDirectiveMarker, err := handleDirectiveMarker(key, originalValue, modifiedValue, patch)
@@ -198,7 +209,7 @@ func diffMaps(original, modified map[string]interface{}, schema LookupPatchMeta,
 		if foundDirectiveMarker {
 			continue
 		}
-
+		// 如果 originalValue 和 modifiedValue 类型不同，则将 modifiedValue 直接加入补丁
 		if reflect.TypeOf(originalValue) != reflect.TypeOf(modifiedValue) {
 			// Types have changed, so add to patch
 			if !diffOptions.IgnoreChangesAndAdditions {
@@ -208,6 +219,7 @@ func diffMaps(original, modified map[string]interface{}, schema LookupPatchMeta,
 		}
 
 		// Types are the same, so compare values
+		// 如果值是 map 或 slice，分别调用 handleMapDiff 和 handleSliceDiff 进行递归比较
 		switch originalValueTyped := originalValue.(type) {
 		case map[string]interface{}:
 			modifiedValueTyped := modifiedValue.(map[string]interface{})
@@ -216,18 +228,21 @@ func diffMaps(original, modified map[string]interface{}, schema LookupPatchMeta,
 			modifiedValueTyped := modifiedValue.([]interface{})
 			err = handleSliceDiff(key, originalValueTyped, modifiedValueTyped, patch, schema, diffOptions)
 		default:
+			// 对于其他类型的值，调用 replacePatchFieldIfNotEqual 将不同的字段加入补丁。
 			replacePatchFieldIfNotEqual(key, originalValue, modifiedValue, patch, diffOptions)
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
-
+	//调用 updatePatchIfMissing 来更新补丁，处理 original 中缺失的字段。
 	updatePatchIfMissing(original, modified, patch, diffOptions)
 	// Insert the retainKeysList iff there are values present in the retainKeysList and
 	// either of the following is true:
 	// - the patch is not empty
 	// - there are additional field in original that need to be cleared
+	// 如果 retainKeysList 中有内容，并且补丁不为空或者 original 中有需要清除的额外字段，
+	//则将 retainKeysList 作为 $retainKeys 指令加入补丁。
 	if len(retainKeysList) > 0 &&
 		(len(patch) > 0 || hasAdditionalNewField(original, modified)) {
 		patch[retainKeysDirective] = sortScalars(retainKeysList)

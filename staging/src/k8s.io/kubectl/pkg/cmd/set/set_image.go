@@ -232,9 +232,14 @@ func (o *SetImageOptions) Validate() error {
 // Run performs the execution of 'set image' sub command
 func (o *SetImageOptions) Run() error {
 	allErrs := []error{}
-
+	//调用 CalculatePatches 函数来计算补丁。该函数会生成一系列的更新操作（补丁），用于描述将要修改的内容。
+	//传递给 CalculatePatches 的参数包括 o.Infos（包含了 Pod 或其他对象的信息）和一个匿名函数，该函数会更新 Pod 的 PodSpec。
 	patches := CalculatePatches(o.Infos, scheme.DefaultJSONEncoder(), func(obj runtime.Object) ([]byte, error) {
 		_, err := o.UpdatePodSpecForObject(obj, func(spec *v1.PodSpec) error {
+			//更新 PodSpec 中的容器镜像。
+			//对每个容器名称和镜像执行更新操作，通过 o.ResolveImage(image) 来解析镜像。
+			//调用 setImage 函数更新 spec.InitContainers 或 spec.Containers 中的容器镜像。
+			//如果找不到容器，则会记录错误。
 			for name, image := range o.ContainerImages {
 				resolvedImageName, err := o.ResolveImage(image)
 				if err != nil {
@@ -273,10 +278,11 @@ func (o *SetImageOptions) Run() error {
 		}
 
 		// no changes
+		//如果补丁没有任何变化（即补丁为空或是 {}），则跳过该补丁。
 		if string(patch.Patch) == "{}" || len(patch.Patch) == 0 {
 			continue
 		}
-
+		//如果在本地或模拟运行模式下（DryRun），直接输出对象而不执行实际的操作。
 		if o.Local || o.DryRunStrategy == cmdutil.DryRunClient {
 			if err := o.PrintObj(info.Object, o.Out); err != nil {
 				allErrs = append(allErrs, err)
@@ -285,6 +291,7 @@ func (o *SetImageOptions) Run() error {
 		}
 
 		// patch the change
+		//否则，使用 resource.NewHelper 执行实际的 Patch 操作，更新目标 Pod 配置
 		actual, err := resource.
 			NewHelper(info.Client, info.Mapping).
 			DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
