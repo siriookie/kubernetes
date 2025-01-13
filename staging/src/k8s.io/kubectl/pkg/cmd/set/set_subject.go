@@ -203,6 +203,7 @@ func (o *SubjectOptions) Validate() error {
 }
 
 // Run performs the execution of "set subject" sub command
+// patch
 func (o *SubjectOptions) Run(fn updateSubjects) error {
 	patches := CalculatePatches(o.Infos, scheme.DefaultJSONEncoder(), func(obj runtime.Object) ([]byte, error) {
 		subjects := []rbacv1.Subject{}

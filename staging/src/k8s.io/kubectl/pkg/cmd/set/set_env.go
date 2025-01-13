@@ -278,11 +278,12 @@ func (o *EnvOptions) Validate() error {
 
 // RunEnv contains all the necessary functionality for the OpenShift cli env command
 func (o *EnvOptions) RunEnv() error {
+	//解析传入的环境变量参数，返回解析后的环境变量、需要移除的变量、是否从标准输入读取环境变量等信息
 	env, remove, envFromStdin, err := envutil.ParseEnv(append(o.EnvParams, o.envArgs...), o.In)
 	if err != nil {
 		return err
 	}
-
+	//如果 From 参数不为空，构建一个查询构建器 b，并从指定的源获取信息（Secrets 或 ConfigMaps）。
 	if len(o.From) != 0 {
 		b := o.builder().
 			WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
@@ -310,6 +311,7 @@ func (o *EnvOptions) RunEnv() error {
 
 		for _, info := range infos {
 			switch from := info.Object.(type) {
+			// 提取 Secret 中的环境变量
 			case *v1.Secret:
 				for key := range from.Data {
 					if contains(key, o.Keys) {
@@ -327,6 +329,7 @@ func (o *EnvOptions) RunEnv() error {
 						env = append(env, envVar)
 					}
 				}
+			// 提取 ConfigMap 中的环境变量
 			case *v1.ConfigMap:
 				for key := range from.Data {
 					if contains(key, o.Keys) {
@@ -349,7 +352,7 @@ func (o *EnvOptions) RunEnv() error {
 			}
 		}
 	}
-
+	//如果指定了前缀，则将其添加到每个环境变量的名称前。
 	if len(o.Prefix) != 0 {
 		for i := range env {
 			env[i].Name = fmt.Sprintf("%s%s", o.Prefix, env[i].Name)
@@ -378,6 +381,7 @@ func (o *EnvOptions) RunEnv() error {
 	if err != nil {
 		return err
 	}
+	// 计算需要更新的补丁，更新 Pod 的环境变量。
 	patches := CalculatePatches(infos, scheme.DefaultJSONEncoder(), func(obj runtime.Object) ([]byte, error) {
 		_, err := o.updatePodSpecForObject(obj, func(spec *v1.PodSpec) error {
 			resolutionErrorsEncountered := false
@@ -435,7 +439,7 @@ func (o *EnvOptions) RunEnv() error {
 						return err
 					}
 				}
-
+				// 更新环境变量
 				c.Env = updateEnv(c.Env, env, remove)
 				if o.List {
 					resolveErrors := map[string][]string{}

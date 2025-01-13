@@ -406,7 +406,7 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 				create.NewCmdCreate(f, o.IOStreams),        // 发送post请求create resource
 				expose.NewCmdExposeService(f, o.IOStreams), // 发送post请求调用create resource 创建一个service
 				run.NewCmdRun(f, o.IOStreams),              // 发送请求create resource 然后如果要执行请求的话会waitpod 等待pod启动
-				set.NewCmdSet(f, o.IOStreams),
+				set.NewCmdSet(f, o.IOStreams),              // 发送patch请求，对image/env/resource等等资源进行set
 			},
 		},
 		{

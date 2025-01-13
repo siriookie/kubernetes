@@ -25,8 +25,8 @@ package sets
 type String map[string]Empty
 
 // NewString creates a String from a list of values.
-func NewString(items ...string) Set[string] {
-	return New[string](items...)
+func NewString(items ...string) String {
+	return String(New[string](items...))
 }
 
 // StringKeySet creates a String from a keys of a map[string](? extends interface{}).

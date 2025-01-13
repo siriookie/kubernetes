@@ -225,6 +225,7 @@ func (o *SetResourcesOptions) Run() error {
 	patches := CalculatePatches(o.Infos, scheme.DefaultJSONEncoder(), func(obj runtime.Object) ([]byte, error) {
 		transformed := false
 		_, err := o.UpdatePodSpecForObject(obj, func(spec *v1.PodSpec) error {
+			// 修改pod的resource limit和request，生成新的patch
 			initContainers, _ := selectContainers(spec.InitContainers, o.ContainerSelector)
 			containers, _ := selectContainers(spec.Containers, o.ContainerSelector)
 			containers = append(containers, initContainers...)
