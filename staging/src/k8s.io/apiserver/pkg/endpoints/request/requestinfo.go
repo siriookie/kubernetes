@@ -290,6 +290,16 @@ func WithRequestInfo(parent context.Context, info *RequestInfo) context.Context 
 }
 
 // RequestInfoFrom returns the value of the RequestInfo key on the ctx
+// requestInfo 是 apiserver 自己封装的结构体，表示这个请求要操作什么资源，比如：
+//
+//	/api/v1/namespaces/default/pods/nginx => {
+//	   IsResourceRequest: true,
+//	   Verb: "get",
+//	   Namespace: "default",
+//	   Resource: "pods",
+//	   Name: "nginx",
+//	   ...
+//	}
 func RequestInfoFrom(ctx context.Context) (*RequestInfo, bool) {
 	info, ok := ctx.Value(requestInfoKey).(*RequestInfo)
 	return info, ok

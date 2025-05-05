@@ -217,10 +217,11 @@ func (o *Options) Complete(ctx context.Context, fss cliflag.NamedFlagSets, alter
 	}
 
 	// set defaults
+	//确定这个 server 对外暴露的地址（例如服务注册或内部组件互联时使用）。
 	if err := completed.GenericServerRunOptions.DefaultAdvertiseAddress(completed.SecureServing.SecureServingOptions); err != nil {
 		return CompletedOptions{}, err
 	}
-
+	//当没有用户指定 TLS 证书时，会自动生成一个自签名证书，使用传入的 alternateDNS 和 alternateIPs（如 kubernetes.default.svc、service IP 等）。
 	if err := completed.SecureServing.MaybeDefaultWithSelfSignedCerts(completed.GenericServerRunOptions.AdvertiseAddress.String(), alternateDNS, alternateIPs); err != nil {
 		return CompletedOptions{}, fmt.Errorf("error creating self-signed certificates: %v", err)
 	}

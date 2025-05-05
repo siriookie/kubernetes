@@ -41,6 +41,11 @@ import (
 )
 
 // NewCmdCertificate returns `certificate` Cobra command
+// certificate approve（批准证书请求）
+//
+// certificate deny（拒绝证书请求）
+//
+// 主要用于管理 Kubernetes 证书（CertificateSigningRequest，CSR）。
 func NewCmdCertificate(restClientGetter genericclioptions.RESTClientGetter, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:                   "certificate SUBCOMMAND",

@@ -195,6 +195,32 @@ func NewApplyFlags(streams genericiooptions.IOStreams) *ApplyFlags {
 }
 
 // NewCmdApply creates the `apply` command
+// 在 Kubernetes 中，kubectl apply 默认使用 Client-Side Apply (CSA)，但可以通过 --server-side 选项启用 Server-Side Apply (SSA)。
+//
+// Client-Side Apply (CSA)（默认）
+// 实现方式：
+//
+// kubectl 先获取当前对象的 YAML（如果存在）。
+//
+// 计算三方合并补丁（Three-way Merge Patch），即：
+//
+// 当前集群的配置（live configuration）
+//
+// 用户上次应用的配置（last applied configuration）
+//
+// 用户本次提交的配置（modified configuration）
+//
+// 计算出最终变更后，发送 JSON Merge Patch 请求（PATCH 方法）。
+//
+// 服务器接收请求后，应用变更并更新 metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]。
+//
+// 缺点：
+//
+// 可能导致字段丢失，如果多个用户管理同一个资源，可能会发生冲突。
+//
+// 依赖 kubectl 本地计算 patch，客户端负担较大。
+//
+// 需要在 metadata.annotations 记录 kubectl.kubernetes.io/last-applied-configuration。
 func NewCmdApply(baseName string, f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	flags := NewApplyFlags(ioStreams)
 
@@ -347,20 +373,19 @@ func (flags *ApplyFlags) ToOptions(f cmdutil.Factory, cmd *cobra.Command, baseNa
 
 		PrintFlags: flags.PrintFlags,
 
-		DeleteOptions:   deleteOptions,
-		ToPrinter:       toPrinter,
-		ServerSideApply: serverSideApply,
-		ForceConflicts:  forceConflicts,
-		FieldManager:    fieldManager,
-		Selector:        flags.Selector,
-		DryRunStrategy:  dryRunStrategy,
-		Prune:           flags.Prune,
-		PruneResources:  flags.PruneResources,
-		All:             flags.All,
-		Overwrite:       flags.Overwrite,
-		OpenAPIPatch:    flags.OpenAPIPatch,
-		Subresource:     flags.Subresource,
-
+		DeleteOptions:       deleteOptions,
+		ToPrinter:           toPrinter,
+		ServerSideApply:     serverSideApply,
+		ForceConflicts:      forceConflicts,
+		FieldManager:        fieldManager,
+		Selector:            flags.Selector,
+		DryRunStrategy:      dryRunStrategy,
+		Prune:               flags.Prune,
+		PruneResources:      flags.PruneResources,
+		All:                 flags.All,
+		Overwrite:           flags.Overwrite,
+		OpenAPIPatch:        flags.OpenAPIPatch,
+		Subresource:         flags.Subresource,
 		Recorder:            recorder,
 		Namespace:           namespace,
 		EnforceNamespace:    enforceNamespace,
@@ -498,6 +523,7 @@ func (o *ApplyOptions) SetObjects(infos []*resource.Info) {
 	o.objectsCached = true
 }
 
+// 将Kubernetes 资源（YAML/JSON）应用到集群。
 // Run executes the `apply` command.
 func (o *ApplyOptions) Run() error {
 	if o.PreProcessorFn != nil {
@@ -554,13 +580,32 @@ func (o *ApplyOptions) Run() error {
 	return nil
 }
 
+// applyOneObject 主要负责：
+//
+// 检查对象信息（是否有 Name，是否使用了 GenerateName）。
+//
+// 记录对象信息（Recorder.Record）。
+//
+// 执行 Server-Side Apply（SSA）或 Client-Side Apply（CSA）：
+//
+// Server-Side Apply (SSA)：调用 Patch 方法，直接将整个对象应用到服务器。
+//
+// Client-Side Apply (CSA)：
+//
+// 获取对象的当前状态
+//
+// 计算修改后的配置
+//
+// 计算三向合并补丁
+//
+// 发送补丁请求更新对象
 func (o *ApplyOptions) applyOneObject(info *resource.Info) error {
 	o.MarkNamespaceVisited(info)
-
+	//记录对象的变更历史，方便审计和追踪变更。
 	if err := o.Recorder.Record(info.Object); err != nil {
 		klog.V(4).Infof("error recording current command: %v", err)
 	}
-
+	//如果 Name 为空，说明对象可能依赖 GenerateName 机制（即服务器自动分配名称），但 kubectl apply 不支持 GenerateName，因此直接返回错误。
 	if len(info.Name) == 0 {
 		metadata, _ := meta.Accessor(info.Object)
 		generatedName := metadata.GetGenerateName()
@@ -573,7 +618,7 @@ func (o *ApplyOptions) applyOneObject(info *resource.Info) error {
 		DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
 		WithFieldManager(o.FieldManager).
 		WithFieldValidation(o.ValidationDirective)
-
+	//如果开启了 Server-Side Apply，则直接将完整的 YAML 资源对象传递给服务器进行 PATCH，服务器会根据 FieldManager 进行字段管理。
 	if o.ServerSideApply {
 		// Send the full object to be applied on the server side.
 		data, err := runtime.Encode(unstructured.UnstructuredJSONScheme, info.Object)
@@ -670,7 +715,7 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 		}
 		return nil
 	}
-
+	//如果 没有启用 Server-Side Apply，就需要执行三向合并 (Three-Way Merge)。
 	// Get the modified configuration of the object. Embed the result
 	// as an annotation in the modified configuration, so that it will appear
 	// in the patch sent to the server.
@@ -683,7 +728,7 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 		if !errors.IsNotFound(err) {
 			return cmdutil.AddSourceToErr(fmt.Sprintf("retrieving current configuration of:\n%s\nfrom server for:", info.String()), info.Source, err)
 		}
-
+		//如果对象不存在，则直接创建新资源：
 		// Create the resource if it doesn't exist
 		// First, update the annotation used by kubectl apply
 		if err := util.CreateApplyAnnotation(info.Object, unstructured.UnstructuredJSONScheme); err != nil {
@@ -733,7 +778,9 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 		if _, ok := annotationMap[corev1.LastAppliedConfigAnnotation]; !ok {
 			fmt.Fprintf(o.ErrOut, warningNoLastAppliedConfigAnnotation, info.ObjectName(), corev1.LastAppliedConfigAnnotation, o.cmdBaseName)
 		}
-
+		//获取当前对象的 JSON
+		//计算补丁
+		//发送 Patch 进行更新
 		patcher, err := newPatcher(o, info, helper)
 		if err != nil {
 			return err

@@ -116,6 +116,21 @@ type EventsOptions struct {
 	genericiooptions.IOStreams
 }
 
+// 1. 列出所有事件
+// kubectl events
+// 💡 默认行为： 显示集群中的所有事件（Normal 和 Warning）。
+// 2. 按 Pod 过滤
+// kubectl events --for pod/mypod
+// 💡 只显示 mypod 相关的事件。
+// 3. 实时监听事件
+// kubectl events --watch
+// 💡 持续输出新发生的事件，类似于 kubectl get events --watch。
+// 4. 只查看 Warning 级别的事件
+// kubectl events --types=Warning
+// 💡 过滤掉正常事件，只看警告类事件（如 FailedScheduling）。
+// 5. 以 JSON 格式输出
+// kubectl events -o json
+// 💡 以 JSON 结构化格式返回事件，适用于日志分析或自动化工具。
 // NewCmdEvents creates a new events command
 func NewCmdEvents(restClientGetter genericclioptions.RESTClientGetter, streams genericiooptions.IOStreams) *cobra.Command {
 	flags := NewEventsFlags(restClientGetter, streams)

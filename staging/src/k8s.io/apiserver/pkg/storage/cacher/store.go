@@ -78,6 +78,43 @@ type orderedLister interface {
 	ListPrefix(prefix, continueKey string, limit int) (items []interface{}, hasMore bool)
 }
 
+// (1) 如果启用了 BtreeWatchCache 特性
+// 返回 newThreadedBtreeStoreIndexer
+// 这是一个 基于 B 树的并发安全索引器，特点：
+//
+// 使用 B 树（B-tree） 存储数据，适合范围查询（如 resourceVersion > X）。
+//
+// 参数 btreeDegree 控制 B 树的阶数（影响查询性能和内存占用）。
+//
+// 优化场景：
+// 当 Watch 事件非常多时，B 树比哈希表更高效（尤其是范围查询）。
+//
+// (2) 如果未启用 BtreeWatchCache
+// 返回 cache.NewIndexer
+// 这是 Kubernetes 默认的索引器，基于 threadSafeMap（哈希表 + 多级索引），特点：
+//
+// 主存储使用 map[string]interface{}（键值对），点查效率 O(1)。
+//
+// 通过 indexers 定义额外索引（如按 namespace 分类）。
+//
+// 优化场景：
+// 适合点查（如 GetPod("nginx")）和少量范围查询。
+//
+// 3. 关键参数
+// 参数	说明
+// storeElementKey	计算对象键的函数（如 namespace/name）。
+// storeElementIndexers(indexers)	将用户定义的 indexers 转换为内部格式。
+// btreeDegree	B 树的阶数（默认可能是 32，影响树的深度）。
+// 4. 为什么需要 B 树选项？
+// Kubernetes 默认使用 哈希表索引，但在某些场景下 B 树更优：
+//
+// 场景	哈希表索引 (threadSafeMap)	B 树索引 (threadedBtreeStoreIndexer)
+// 点查（Get）	⭐️ O(1) 超快	O(log N) 稍慢
+// 范围查询（如 resourceVersion > X）	O(N) 全表扫描	⭐️ O(log N + M) 高效
+// 内存占用	较高（存储多份索引）	较低（B 树结构紧凑）
+// 适用场景	Watch 事件较少时	Watch 事件量大、需要高效范围查询
+// 典型案例：
+// 当客户端发起一个 Watch 请求（如 resourceVersion=1024），B 树可以快速定位到 resourceVersion > 1024 的事件，而哈希表需要遍历所有事件。
 func newStoreIndexer(indexers *cache.Indexers) storeIndexer {
 	if utilfeature.DefaultFeatureGate.Enabled(features.BtreeWatchCache) {
 		return newThreadedBtreeStoreIndexer(storeElementIndexers(indexers), btreeDegree)

@@ -62,6 +62,7 @@ func TrackStarted(handler http.Handler, tp trace.TracerProvider, name string) ht
 
 // TrackCompleted measures the timestamp the given handler has completed execution and then
 // it updates the corresponding metric with the filter latency duration.
+// 在一个 HTTP handler 执行完成之后，记录它的执行耗时（延迟）到指标系统中，并在日志中输出（可选）。
 func TrackCompleted(handler http.Handler) http.Handler {
 	return trackCompleted(handler, clock.RealClock{}, func(ctx context.Context, fr *requestFilterRecord, completedAt time.Time) {
 		latency := completedAt.Sub(fr.startedTimestamp)

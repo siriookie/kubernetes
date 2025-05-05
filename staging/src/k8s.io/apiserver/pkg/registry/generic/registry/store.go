@@ -1485,6 +1485,10 @@ func (e *Store) calculateTTL(obj runtime.Object, defaultTTL int64, update bool) 
 
 // CompleteWithOptions updates the store with the provided options and
 // defaults common fields.
+// 这段代码干了三件大事：
+// 用 StorageConfig.New() 构造出底层存储（通常是 etcd3）。
+// 如果提供了装饰器（Decorator），则用 cacher 包装 etcd3。
+// 设置 e.Storage = storageInterface。
 func (e *Store) CompleteWithOptions(options *generic.StoreOptions) error {
 	if e.DefaultQualifiedResource.Empty() {
 		return fmt.Errorf("store %#v must have a non-empty qualified resource", e)
@@ -1658,6 +1662,11 @@ func (e *Store) CompleteWithOptions(options *generic.StoreOptions) error {
 }
 
 // startObservingCount starts monitoring given prefix and periodically updating metrics. It returns a function to stop collection.
+// 每个 REST Store（也就是一个资源的存储后端）都会启动一个 goroutine，周期性地向 etcd 查询该资源前缀下的对象数目。
+//
+// 查询结果通过 objectCountTracker.Set(...) 设置到 objectCountTracker 中（这是一个线程安全的内存 map）。
+//
+// 查询频率是大约每分钟一次（带抖动），也就是缓存刷新间隔。
 func (e *Store) startObservingCount(period time.Duration, objectCountTracker flowcontrolrequest.StorageObjectCountTracker) func() {
 	prefix := e.KeyRootFunc(genericapirequest.NewContext())
 	resourceName := e.DefaultQualifiedResource.String()

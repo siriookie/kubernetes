@@ -231,8 +231,21 @@ func (o *EditOptions) Validate() error {
 }
 
 // Run performs the execution
+// kubectl edit svc my-service
+// 打开编辑器 → 用户修改 YAML/JSON。
+// 保存并退出 → kubectl 会检测变更并应用。
+// API 服务器处理请求 → Kubernetes 调度、更新资源。
+// 可能触发滚动更新（例如 Deployment）。
 func (o *EditOptions) Run() error {
 	edit := NewDefaultEditor(editorEnvs())
+	//这句话的意思是 editFn 这个函数在每个编辑会话中都会被调用，具体来说，它有两种调用方式：
+	//
+	//普通编辑（normal edit）：
+	//
+	//editFn 只会调用一次，并且传入的是一个资源列表，即一次性处理多个资源的编辑操作。
+	//创建时编辑（edit-on-create）：
+	//
+	//editFn 会对每个单独的资源分别调用一次，而不是一次性传入整个资源列表。也就是说，每个新创建的资源都会单独调用 editFn 进行处理。
 	// editFn is invoked for each edit session (once with a list for normal edit, once for each individual resource in a edit-on-create invocation)
 	editFn := func(infos []*resource.Info) error {
 		var (
@@ -266,17 +279,23 @@ func (o *EditOptions) Run() error {
 			}
 
 			// generate the file to edit
+			// 1. 创建一个 bytes.Buffer 作为写入目标
 			buf := &bytes.Buffer{}
 			var w io.Writer = buf
+			// 2. 如果启用了 Windows 换行符 (CRLF)，则使用 CRLF Writer
+			//o.WindowsLineEndings 是一个布尔值，如果为 true，表示需要使用 Windows 的 \r\n 作为换行符。
+			//crlf.NewCRLFWriter(w) 会创建一个包装后的 Writer，自动转换 \n 为 \r\n，确保 Windows 兼容性。
 			if o.WindowsLineEndings {
 				w = crlf.NewCRLFWriter(w)
 			}
-
+			// 3. 如果需要添加头部信息，则写入头部
+			//o.editPrinterOptions.addHeader 是一个布尔值，如果为 true，表示需要在文件顶部添加一个注释头（例如 YAML 资源的描述信息）。
 			if o.editPrinterOptions.addHeader {
 				results.header.writeTo(w, o.EditMode)
 			}
 
 			if !containsError {
+				// 4.1 如果没有错误，处理对象并写入缓冲区
 				if err := o.extractManagedFields(originalObj); err != nil {
 					return preservedFile(err, results.file, o.ErrOut)
 				}
@@ -289,27 +308,47 @@ func (o *EditOptions) Run() error {
 				// In case of an error, preserve the edited file.
 				// Remove the comments (header) from it since we already
 				// have included the latest header in the buffer above.
+				// 4.2 如果有错误，保留已编辑的文件内容
+				// 并移除已经添加的头部信息
 				buf.Write(cmdutil.ManualStrip(edited))
 			}
 
 			// launch the editor
+			// 启动编辑器
 			editedDiff := edited
+			//这部分代码创建一个临时文件并打开默认编辑器（通常是 vi 或 vim），让用户编辑 Kubernetes 资源的 YAML/JSON。
+			//edit.LaunchTempFile(...)：
+			//filepath.Base(os.Args[0]) 获取当前可执行文件的名称（如 kubectl）。
+			//o.editPrinterOptions.ext 指定文件扩展名（可能是 .yaml 或 .json）。
+			//buf 作为文件的初始内容（即当前资源的 YAML/JSON 配置）。
+			//用户修改后保存退出，edited 变量存储用户编辑后的内容，file 记录临时文件路径。
 			edited, file, err = edit.LaunchTempFile(fmt.Sprintf("%s-edit-", filepath.Base(os.Args[0])), o.editPrinterOptions.ext, buf)
 			if err != nil {
 				return preservedFile(err, results.file, o.ErrOut)
 			}
 
 			// If we're retrying the loop because of an error, and no change was made in the file, short-circuit
+			//如果之前编辑出错（containsError == true），但这次编辑和上次内容相同，直接取消编辑，返回错误：
+			//cmdutil.StripComments(editedDiff) 和 cmdutil.StripComments(edited) 会去掉 YAML/JSON 文件中的注释，然后进行比较。
+			//如果没有修改，则报 "Edit cancelled, no valid changes were saved."，并退出。
 			if containsError && bytes.Equal(cmdutil.StripComments(editedDiff), cmdutil.StripComments(edited)) {
 				return preservedFile(fmt.Errorf("%s", "Edit cancelled, no valid changes were saved."), file, o.ErrOut)
 			}
 			// cleanup any file from the previous pass
+			//results.file 记录上次的临时文件路径，如果它存在，说明上一次的编辑产生了一个文件，这里需要删除它，避免重复使用。
 			if len(results.file) > 0 {
 				os.Remove(results.file)
 			}
+			//打印用户修改后的内容
 			klog.V(4).Infof("User edited:\n%s", string(edited))
 
 			// Apply validation
+			//o.f.Validator(o.ValidationDirective) 获取 Kubernetes API 服务器的 schema（模式），用于校验 YAML/JSON 结构是否合法。
+			//schema.ValidateBytes(cmdutil.StripComments(edited)) 去掉注释后，检查 edited 是否符合 API 规范。
+			//如果校验失败：
+			//containsError = true 标记错误。
+			//使用 apierrors.NewInvalid(...) 生成错误信息，提示**“The edited file failed validation”**。
+			//continue 重新进入 for 循环，让用户重新编辑。
 			schema, err := o.f.Validator(o.ValidationDirective)
 			if err != nil {
 				return preservedFile(err, file, o.ErrOut)
@@ -326,12 +365,15 @@ func (o *EditOptions) Run() error {
 			}
 
 			// Compare content without comments
+			//如果编辑后的文件和原始文件相同（忽略注释），说明用户没有做任何修改。
+			//直接删除临时文件 os.Remove(file)，并输出 "Edit cancelled, no changes made."。
 			if bytes.Equal(cmdutil.StripComments(original), cmdutil.StripComments(edited)) {
 				os.Remove(file)
 				fmt.Fprintln(o.ErrOut, "Edit cancelled, no changes made.")
 				return nil
 			}
-
+			//hasLines(bytes.NewBuffer(edited)) 检查文件是否包含有效内容：
+			//如果 edited 为空，则删除文件 os.Remove(file)，并提示 "Edit cancelled, saved file was empty."。
 			lines, err := hasLines(bytes.NewBuffer(edited))
 			if err != nil {
 				return preservedFile(err, file, o.ErrOut)
@@ -341,12 +383,17 @@ func (o *EditOptions) Run() error {
 				fmt.Fprintln(o.ErrOut, "Edit cancelled, saved file was empty.")
 				return nil
 			}
-
+			//editResults{file: file} 记录当前编辑的文件路径，以便后续错误处理或提交更新。
 			results = editResults{
 				file: file,
 			}
 
 			// parse the edited file
+			//o.updatedResultGetter(edited).Infos() 解析用户编辑后的 Kubernetes 资源。
+			//如果解析失败（YAML/JSON 语法错误）：
+			//containsError = true 记录错误状态。
+			//results.header.reasons 追加错误信息 “The edited file had a syntax error”。
+			//continue 让用户重新编辑。
 			updatedInfos, err := o.updatedResultGetter(edited).Infos()
 			if err != nil {
 				// syntax error
@@ -356,10 +403,18 @@ func (o *EditOptions) Run() error {
 			}
 
 			// not a syntax error as it turns out...
+			//解析成功，说明 用户的 YAML/JSON 语法正确，将 containsError 设为 false。
+			//updatedVisitor := resource.InfoListVisitor(updatedInfos)：
+			//updatedInfos 是用户编辑后的 Kubernetes 资源。
+			//InfoListVisitor(updatedInfos) 用于遍历这些资源（即 kubectl edit 支持一次修改多个资源）。
 			containsError = false
 			updatedVisitor := resource.InfoListVisitor(updatedInfos)
 
 			// we need to add back managedFields to both updated and original object
+			//managedFields 是 Kubernetes 用于管理 Server-Side Apply 变更记录的字段。
+			//这部分逻辑确保：
+			//用户编辑后的对象（updatedInfos）和原始对象（infos）都保留 managedFields。
+			//如果恢复失败，则报错 preservedFile(err, file, o.ErrOut) 并退出。
 			if err := o.restoreManagedFields(updatedInfos); err != nil {
 				return preservedFile(err, file, o.ErrOut)
 			}
@@ -368,16 +423,28 @@ func (o *EditOptions) Run() error {
 			}
 
 			// need to make sure the original namespace wasn't changed while editing
+			//resource.RequireNamespace(o.CmdNamespace) 用于检查 用户是否修改了 namespace。
+			//Kubernetes 规定：
+			//kubectl edit 不能修改 namespace（即 metadata.namespace 必须和原始对象一致）。
+			//如果发现 namespace 被改动，报错并退出。
 			if err := updatedVisitor.Visit(resource.RequireNamespace(o.CmdNamespace)); err != nil {
 				return preservedFile(err, file, o.ErrOut)
 			}
 
 			// iterate through all items to apply annotations
+			//o.visitAnnotation(updatedVisitor) 遍历所有编辑后的资源，应用必要的 annotations（注解）。
+			//可能涉及：
+			//记录 kubectl edit 的修改历史（类似 kubectl.kubernetes.io/last-applied-configuration）。
+			//其他 K8s API 需要的元数据。
 			if err := o.visitAnnotation(updatedVisitor); err != nil {
 				return preservedFile(err, file, o.ErrOut)
 			}
 
 			switch o.EditMode {
+			//NormalEditMode：常规的编辑模式，调用 visitToPatch 方法处理资源更新（例如通过 kubectl apply）。
+			//ApplyEditMode：调用 visitToApplyEditPatch 方法处理编辑后的资源更新操作。
+			//EditBeforeCreateMode：用于资源创建前的编辑，调用 visitToCreate 方法。
+			//default：如果编辑模式不受支持，返回错误。
 			case NormalEditMode:
 				err = o.visitToPatch(infos, updatedVisitor, &results)
 			case ApplyEditMode:
@@ -397,15 +464,19 @@ func (o *EditOptions) Run() error {
 			// 2. notfound: indicate the location of the saved configuration of the deleted resource
 			// 3. invalid: retry those on the spot by looping ie. reloading the editor
 			if results.retryable > 0 {
+				//retryable 错误表示该操作可以重试，用户可以使用 kubectl replace -f <file> 来再次尝试。
 				fmt.Fprintf(o.ErrOut, "You can run `%s replace -f %s` to try this update again.\n", filepath.Base(os.Args[0]), file)
 				return cmdutil.ErrExit
 			}
 			if results.notfound > 0 {
+				//notfound 错误表示用户编辑的资源已经被删除，编辑内容被保存到指定的文件。
 				fmt.Fprintf(o.ErrOut, "The edits you made on deleted resources have been saved to %q\n", file)
 				return cmdutil.ErrExit
 			}
 
 			if len(results.edit) == 0 {
+				//如果没有进行有效的编辑（results.edit 长度为 0），并且没有删除资源的情况，删除临时编辑文件。
+				//如果编辑的资源已删除，提示用户编辑内容已保存。
 				if results.notfound == 0 {
 					os.Remove(file)
 				} else {
@@ -415,6 +486,7 @@ func (o *EditOptions) Run() error {
 			}
 
 			if len(results.header.reasons) > 0 {
+				//检查是否有错误原因，如果有，设置 containsError 为 true。
 				containsError = true
 			}
 		}
@@ -617,14 +689,22 @@ func encodeToJSON(obj runtime.Unstructured) ([]byte, error) {
 	return js, nil
 }
 
+// originalInfos: 原始对象列表，即用户编辑前的 Kubernetes 资源信息。
+//
+// patchVisitor: 访问编辑后的对象，用于遍历用户修改后的资源对象。
+//
+// results: 存储执行结果，包括错误信息
+// ，用于处理 Kubernetes 资源的 编辑后提交（patch） 逻辑。它的作用是对比原始对象和编辑后的对象，计算出差异，并根据不同情况使用 MergePatch 或 StrategicMergePatch 方式进行 PATCH 更新。
 func (o *EditOptions) visitToPatch(originalInfos []*resource.Info, patchVisitor resource.Visitor, results *editResults) error {
 	err := patchVisitor.Visit(func(info *resource.Info, incomingErr error) error {
+		//通过 UID 查找对应的原始对象 originalInfo，确保是同一个资源。
 		editObjUID, err := meta.NewAccessor().UID(info.Object)
 		if err != nil {
 			return err
 		}
 
 		var originalInfo *resource.Info
+		//通过 UID 查找对应的原始对象 originalInfo，确保是同一个资源。
 		for _, i := range originalInfos {
 			originalObjUID, err := meta.NewAccessor().UID(i.Object)
 			if err != nil {
@@ -638,7 +718,7 @@ func (o *EditOptions) visitToPatch(originalInfos []*resource.Info, patchVisitor 
 		if originalInfo == nil {
 			return fmt.Errorf("no original object found for %#v", info.Object)
 		}
-
+		// 将Object interface转成 runtime.Unstructured interface
 		originalJS, err := encodeToJSON(originalInfo.Object.(runtime.Unstructured))
 		if err != nil {
 			return err
@@ -651,6 +731,7 @@ func (o *EditOptions) visitToPatch(originalInfos []*resource.Info, patchVisitor 
 
 		if reflect.DeepEqual(originalJS, editedJS) {
 			// no edit, so just skip it.
+			//把原始和编辑后的对象转换成 JSON，如果两者相同，则跳过更新。
 			printer, err := o.ToPrinter("skipped")
 			if err != nil {
 				return err
@@ -664,15 +745,14 @@ func (o *EditOptions) visitToPatch(originalInfos []*resource.Info, patchVisitor 
 			mergepatch.RequireMetadataKeyUnchanged("name"),
 			mergepatch.RequireKeyUnchanged("managedFields"),
 		}
-
-		// Create the versioned struct from the type defined in the mapping
-		// (which is the API version we'll be submitting the patch to)
 		versionedObject, err := scheme.Scheme.New(info.Mapping.GroupVersionKind)
 		var patchType types.PatchType
 		var patch []byte
 		switch {
 		case runtime.IsNotRegisteredError(err):
 			// fall back to generic JSON merge patch
+			//如果对象 未在 Kubernetes Scheme 注册，则使用 JSON Merge Patch。
+			//MergePatch 直接计算 JSON 差异，而 StrategicMergePatch 允许更复杂的策略，如合并数组字段。
 			patchType = types.MergePatchType
 			patch, err = jsonpatch.CreateMergePatch(originalJS, editedJS)
 			if err != nil {
@@ -694,6 +774,7 @@ func (o *EditOptions) visitToPatch(originalInfos []*resource.Info, patchVisitor 
 		case err != nil:
 			return err
 		default:
+			//否则使用 Strategic Merge Patch（针对 Kubernetes 资源结构更智能的 Patch 方式）。
 			patchType = types.StrategicMergePatchType
 			patch, err = strategicpatch.CreateTwoWayMergePatch(originalJS, editedJS, versionedObject, preconditions...)
 			if err != nil {
@@ -708,7 +789,7 @@ func (o *EditOptions) visitToPatch(originalInfos []*resource.Info, patchVisitor 
 		if o.OutputPatch {
 			fmt.Fprintf(o.Out, "Patch: %s\n", string(patch))
 		}
-
+		//使用 Kubernetes 客户端 发送 PATCH 请求，将 patch 应用到资源。
 		patched, err := resource.NewHelper(info.Client, info.Mapping).
 			WithFieldManager(o.FieldManager).
 			WithFieldValidation(o.ValidationDirective).
@@ -718,6 +799,7 @@ func (o *EditOptions) visitToPatch(originalInfos []*resource.Info, patchVisitor 
 			fmt.Fprintln(o.ErrOut, results.addError(err, info))
 			return nil
 		}
+		//打印 PATCH 结果。
 		info.Refresh(patched, true)
 		printer, err := o.ToPrinter("edited")
 		if err != nil {
@@ -752,10 +834,18 @@ func (o *EditOptions) visitAnnotation(annotationVisitor resource.Visitor) error 
 	err := annotationVisitor.Visit(func(info *resource.Info, incomingErr error) error {
 		// put configuration annotation in "updates"
 		if o.ApplyAnnotation {
+			//o.ApplyAnnotation 为 true 时：
+			//util.CreateOrUpdateAnnotation(...) 负责给 info.Object（Kubernetes 资源）添加或更新注解，比如：
+			//metadata:
+			//  annotations:
+			//    kubectl.kubernetes.io/last-applied-configuration: "{...}"  # 存储 `kubectl edit` 修改后的 JSON
+			//scheme.DefaultJSONEncoder() 用于 JSON 编码资源。
 			if err := util.CreateOrUpdateAnnotation(true, info.Object, scheme.DefaultJSONEncoder()); err != nil {
 				return err
 			}
 		}
+		//o.Recorder.Record(info.Object) 负责记录 kubectl edit 这次操作的历史信息。
+		//记录失败不会影响流程，只是输出日志
 		if err := o.Recorder.Record(info.Object); err != nil {
 			klog.V(4).Infof("error recording current command: %v", err)
 		}

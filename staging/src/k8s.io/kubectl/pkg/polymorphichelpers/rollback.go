@@ -111,6 +111,11 @@ func (r *DeploymentRollbacker) Rollback(obj runtime.Object, updatedAnnotations m
 	// to the external appsv1 Deployment without round-tripping through an internal version of Deployment. We're
 	// currently getting rid of all internal versions of resources. So we specifically request the appsv1 version
 	// here. This follows the same pattern as for DaemonSet and StatefulSet.
+	/// TODO：在 kubectl 从核心组件中移除后修复此问题。目前无法直接将 runtime.Object 转换为外部的 appsv1.Deployment，
+	//// 只能通过内部版本的 Deployment 进行一次转换（round-tripping）。
+	//// 由于我们正在去除所有资源的内部版本，因此这里明确请求 appsv1 版本。
+	//// 这个处理方式与 DaemonSet 和 StatefulSet 的情况相同。
+	//调用 Kubernetes API Get() 获取 Deployment 资源。
 	deployment, err := r.c.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to retrieve Deployment %s: %v", name, err)
@@ -124,9 +129,11 @@ func (r *DeploymentRollbacker) Rollback(obj runtime.Object, updatedAnnotations m
 		return printTemplate(&rsForRevision.Spec.Template)
 	}
 	if deployment.Spec.Paused {
+		//如果 Deployment 处于 Paused 状态，则不允许回滚，需要先执行：
+		//kubectl rollout resume deployment/nginx
 		return "", fmt.Errorf("you cannot rollback a paused deployment; resume it first with 'kubectl rollout resume' and try again")
 	}
-
+	//如果当前 Deployment 的 Pod Template 和 toRevision 版本一致，则不需要回滚，直接返回 "rollback skipped"。
 	// Skip if the revision already matches current Deployment
 	if equalIgnoreHash(&rsForRevision.Spec.Template, &deployment.Spec.Template) {
 		return fmt.Sprintf("%s (current template already matches revision %d)", rollbackSkipped, toRevision), nil
@@ -158,6 +165,9 @@ func (r *DeploymentRollbacker) Rollback(obj runtime.Object, updatedAnnotations m
 	if dryRunStrategy == cmdutil.DryRunServer {
 		patchOptions.DryRun = []string{metav1.DryRunAll}
 	}
+	//使用 Patch() API 将 toRevision 的 Pod 模板恢复到当前 Deployment。
+	//
+	//如果 dryRunStrategy == DryRunServer，则请求服务器检查 Patch，但不执行真正的修改。
 	// Restore revision
 	if _, err = r.c.AppsV1().Deployments(namespace).Patch(context.TODO(), name, patchType, patch, patchOptions); err != nil {
 		return "", fmt.Errorf("failed restoring revision %d: %v", toRevision, err)
@@ -209,8 +219,14 @@ func getDeploymentPatch(podTemplate *corev1.PodTemplateSpec, annotations map[str
 	return types.JSONPatchType, patch, err
 }
 
+// 这个函数 deploymentRevision 主要用于获取 指定修订版本（revision） 的 ReplicaSet，或者如果没有指定版本，则返回 上一个修订版本 的 ReplicaSet。
+// 如果 toRevision == 0，表示 获取上一个修订版本（倒数第二个 ReplicaSet）。
+//
+// 如果 toRevision > 0，表示 查找指定修订版本。
 func deploymentRevision(deployment *appsv1.Deployment, c kubernetes.Interface, toRevision int64) (revision *appsv1.ReplicaSet, err error) {
-
+	//GetAllReplicaSets 获取 所有旧 ReplicaSet (allOldRSs) 和 当前最新 ReplicaSet (newRS)。
+	//
+	//把 newRS 也加入 allRSs，形成完整的 ReplicaSet 列表。
 	_, allOldRSs, newRS, err := deploymentutil.GetAllReplicaSets(deployment, c.AppsV1())
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve replica sets from deployment %s: %v", deployment.Name, err)
@@ -242,17 +258,18 @@ func deploymentRevision(deployment *appsv1.Deployment, c kubernetes.Interface, t
 				}
 			} else if toRevision == v {
 				return rs, nil
-			}
+			} //返回指定版本的ReplicaSet
 		}
 	}
-
+	//如果 toRevision > 0，但找不到匹配的 ReplicaSet，返回错误 revision not found。
 	if toRevision > 0 {
 		return nil, revisionNotFoundErr(toRevision)
 	}
-
+	//如果 toRevision == 0 且找不到上一个 ReplicaSet，返回 no rollout history 错误。
 	if previousReplicaSet == nil {
 		return nil, fmt.Errorf("no rollout history found for deployment %q", deployment.Name)
 	}
+	//返回上一个 ReplicaSet，用于回滚。
 	return previousReplicaSet, nil
 }
 

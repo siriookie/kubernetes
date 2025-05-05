@@ -67,6 +67,7 @@ func NewAPIServerCommand() *cobra.Command {
 	_, featureGate := featuregate.DefaultComponentGlobalsRegistry.ComponentGlobalsOrRegister(
 		featuregate.DefaultKubeComponent, utilversion.DefaultBuildEffectiveVersion(), utilfeature.DefaultMutableFeatureGate)
 	s := options.NewServerRunOptions()
+	//设置带有优雅退出（graceful shutdown）信号处理的上下文（Context）
 	ctx := genericapiserver.SetupSignalContext()
 
 	cmd := &cobra.Command{
@@ -78,10 +79,12 @@ cluster's shared state through which all other components interact.`,
 
 		// stop printing usage when the command errors
 		SilenceUsage: true,
+		//设置注册好的 Feature Gate。
 		PersistentPreRunE: func(*cobra.Command, []string) error {
 			if err := featuregate.DefaultComponentGlobalsRegistry.Set(); err != nil {
 				return err
 			}
+			//禁用默认的 client-go 警告处理器（因为 kube-apiserver 是 loopback client，自发请求，不需要 warning）。
 			// silence client-go warnings.
 			// kube-apiserver loopback clients should not log self-issued warnings.
 			rest.SetDefaultWarningHandler(rest.NoWarnings{})
@@ -92,12 +95,15 @@ cluster's shared state through which all other components interact.`,
 			fs := cmd.Flags()
 			// Activate logging as soon as possible, after that
 			// show flags with the final logging configuration.
+			//应用日志配置。
 			if err := logsapi.ValidateAndApply(s.Logs, featureGate); err != nil {
 				return err
 			}
+			//			//打印命令行 flags。
 			cliflag.PrintFlags(fs)
 
 			// set default options
+			//设置默认参数。
 			completedOptions, err := s.Complete(ctx)
 			if err != nil {
 				return err
@@ -166,12 +172,19 @@ func Run(ctx context.Context, opts options.CompletedOptions) error {
 }
 
 // CreateServerChain creates the apiservers connected via delegation.
+// 用于构建整个 apiserver 服务器链的核心函数。它负责创建并“串联”三个 apiserver 组件：
+// CustomResourceDefinition（CRD）扩展 apiserver
+// 核心 Kubernetes apiserver（KubeAPIServer）
+// Aggregator apiserver（用于代理/聚合）
 func CreateServerChain(config CompletedConfig) (*aggregatorapiserver.APIAggregator, error) {
 	notFoundHandler := notfoundhandler.New(config.KubeAPIs.ControlPlane.Generic.Serializer, genericapifilters.NoMuxAndDiscoveryIncompleteKey)
+	//创建扩展 APIServer（负责处理自定义资源 CRD），它是整条链中最底层的 server。
+	//注意：这里通过 NewEmptyDelegateWithCustomHandler 把 404 handler 传进去。
 	apiExtensionsServer, err := config.ApiExtensions.New(genericapiserver.NewEmptyDelegateWithCustomHandler(notFoundHandler))
 	if err != nil {
 		return nil, err
 	}
+	//这段代码检查是否开启了对 "customresourcedefinitions" 这个资源的支持。稍后 aggregator server 需要这个信息来决定是否对 CRD 聚合。
 	crdAPIEnabled := config.ApiExtensions.GenericConfig.MergedResourceConfig.ResourceEnabled(apiextensionsv1.SchemeGroupVersion.WithResource("customresourcedefinitions"))
 
 	kubeAPIServer, err := config.KubeAPIs.New(apiExtensionsServer.GenericAPIServer)
@@ -190,6 +203,7 @@ func CreateServerChain(config CompletedConfig) (*aggregatorapiserver.APIAggregat
 }
 
 // CreateKubeAPIServerConfig creates all the resources for running the API server, but runs none of them
+// 用于构建 kube-apiserver 的配置（Config 对象），但并不会启动任何服务
 func CreateKubeAPIServerConfig(
 	opts options.CompletedOptions,
 	genericConfig *genericapiserver.Config,
@@ -205,6 +219,8 @@ func CreateKubeAPIServerConfig(
 	capabilities.Setup(opts.AllowPrivileged, opts.MaxConnectionBytesPerSec)
 
 	// additional admission initializers
+	//admission plugin 是处理 API 请求前做的验证、变更、拒绝；
+	//admission plugins 可能依赖外部配置，比如 cloud config；
 	kubeAdmissionConfig := &kubeapiserveradmission.Config{
 		CloudConfigFile: opts.CloudProvider.CloudConfigFile,
 	}
@@ -212,8 +228,12 @@ func CreateKubeAPIServerConfig(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create admission plugin initializer: %w", err)
 	}
-
+	//用于 aggregator（API 聚合器）模式；
+	//能将 k8s.io 的 API 请求转发到另一个后端服务；
+	//需要将服务名解析成 IP/端口。
 	serviceResolver := buildServiceResolver(opts.EnableAggregatorRouting, genericConfig.LoopbackClientConfig.Host, versionedInformers)
+	//将所有参数整合并构造出 controlplane 配置；
+	//controlplaneapiserver.CreateConfig 是 kube-apiserver 构造核心部分的关键步骤；
 	controlplaneConfig, admissionInitializers, err := controlplaneapiserver.CreateConfig(opts.CompletedOptions, genericConfig, versionedInformers, storageFactory, serviceResolver, kubeInitializers)
 	if err != nil {
 		return nil, nil, nil, err
@@ -237,7 +257,11 @@ func CreateKubeAPIServerConfig(
 			MasterCount:            opts.MasterCount,
 		},
 	}
-
+	//用于指定访问某些组件（如 kubelet、aggregated API server）时的网络策略；
+	//
+	//如果配置了 EgressSelector，则使用它来构造 kubelet dialer；
+	//
+	//同时为 /proxy/... API 子资源设置自定义的 Transport；
 	if config.ControlPlane.Generic.EgressSelector != nil {
 		// Use the config.ControlPlane.Generic.EgressSelector lookup to find the dialer to connect to the kubelet
 		config.Extra.KubeletClientConfig.Lookup = config.ControlPlane.Generic.EgressSelector.Lookup

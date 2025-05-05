@@ -166,7 +166,24 @@ func NewDebugOptions(streams genericiooptions.IOStreams) *DebugOptions {
 	}
 }
 
-// NewCmdDebug returns a cobra command that runs kubectl debug.
+// NewCmdDebug returns a cobra command that runs kubectl debug.‘
+// 创建一个新的调试命令，用于排查 Kubernetes 工作负载（如 Pod）或节点的问题。’
+//1. 进入一个正在运行的 Pod 进行调试
+
+// kubectl debug my-pod -it --image=busybox
+// 作用：在 my-pod 里面启动一个 busybox 容器，用于排查问题
+// -it：交互式进入调试模式
+// --image=busybox：调试容器使用 busybox 镜像
+// 2. 调试 Kubernetes 节点
+// kubectl debug node/my-node --image=busybox
+// 作用：在 my-node 上创建一个 busybox 调试容器，用于排查 my-node 这个节点的问题。
+// 3. 克隆 Pod 并调试
+// kubectl debug my-pod --copy-to=my-pod-debug --image=busybox --set-image=nginx=nginx:debug
+// --copy-to=my-pod-debug：创建一个新的 my-pod-debug Pod 进行调试，不影响原 Pod
+// --set-image=nginx=nginx:debug：将原 Pod 的 nginx 容器替换为 nginx:debug 镜像，以便获取更多调试信息
+// 4. 在 Pod 里执行特定命令
+// kubectl debug my-pod -- ls /var/log
+// 作用：启动调试容器并运行 ls /var/log 命令，列出 /var/log 目录的内容。
 func NewCmdDebug(restClientGetter genericclioptions.RESTClientGetter, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewDebugOptions(streams)
 
@@ -406,6 +423,14 @@ func (o *DebugOptions) Validate() error {
 }
 
 // Run executes a kubectl debug.
+// 获取目标资源（Pod 或 Node）
+// 通过 o.Builder 解析 kubectl debug 传入的 pod-name 或 node-name。
+// 使用 r.Visit(...) 遍历获取的资源信息，并对每个目标执行调试逻辑。
+// 创建 Debug Pod（或附加到现有 Pod）
+// 如果目标是 Node，调用 o.visitNode(ctx, obj) 创建一个 Debug Pod。
+// 如果目标是 Pod，调用 o.visitPod(ctx, obj) 创建或克隆一个 Debug Pod。
+// Attach 进入调试容器（如果 --attach 选项开启）
+// o.AttachFunc(...) 负责连接到 Debug Pod 的容器并打开交互式终端。
 func (o *DebugOptions) Run(restClientGetter genericclioptions.RESTClientGetter, cmd *cobra.Command) error {
 	ctx := context.Background()
 

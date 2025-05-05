@@ -24,11 +24,12 @@ import (
 
 // historyViewer Returns a HistoryViewer for viewing change history
 func historyViewer(restClientGetter genericclioptions.RESTClientGetter, mapping *meta.RESTMapping) (HistoryViewer, error) {
+	//restClientGetter.ToRESTConfig() 获取 RESTConfig，用于与 Kubernetes API 服务器交互。
 	clientConfig, err := restClientGetter.ToRESTConfig()
 	if err != nil {
 		return nil, err
 	}
-
+	//创建 Kubernetes 客户端
 	external, err := kubernetes.NewForConfig(clientConfig)
 	if err != nil {
 		return nil, err

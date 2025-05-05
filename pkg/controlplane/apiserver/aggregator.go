@@ -125,7 +125,13 @@ func CreateAggregatorConfig(
 	return aggregatorConfig, nil
 }
 
-func CreateAggregatorServer(aggregatorConfig aggregatorapiserver.CompletedConfig, delegateAPIServer genericapiserver.DelegationTarget, crds apiextensionsinformers.CustomResourceDefinitionInformer, crdAPIEnabled bool, apiVersionPriorities map[schema.GroupVersion]APIServicePriority) (*aggregatorapiserver.APIAggregator, error) {
+func CreateAggregatorServer(
+	aggregatorConfig aggregatorapiserver.CompletedConfig, // aggregator 的配置
+	delegateAPIServer genericapiserver.DelegationTarget, // 被委托的下游 apiserver（通常是 kube-apiserver）
+	crds apiextensionsinformers.CustomResourceDefinitionInformer, // CRD informer，用于监听 CRD
+	crdAPIEnabled bool, // 是否启用了 CRD API（通常是 apiextensions-apiserver 的配置）
+	apiVersionPriorities map[schema.GroupVersion]APIServicePriority, // 各个 API 版本的优先级设定
+) (*aggregatorapiserver.APIAggregator, error) {
 	aggregatorServer, err := aggregatorConfig.NewWithDelegate(delegateAPIServer)
 	if err != nil {
 		return nil, err

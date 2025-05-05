@@ -319,9 +319,14 @@ type ConditionFunc func(ctx context.Context, info *resource.Info, o *WaitOptions
 
 // RunWait runs the waiting logic
 func (o *WaitOptions) RunWait() error {
+	//这里创建了一个 带超时的 context.Context，用于控制 RunWait 运行的时间。
+	//
+	//如果 o.Timeout 设置了超时，则 ctx 在超时时间到达后会自动取消，避免无限等待
 	ctx, cancel := watchtools.ContextWithOptionalTimeout(context.Background(), o.Timeout)
 	defer cancel()
-
+	//如果 o.ForCondition 设定为 "create"，意味着我们要等待资源 被创建。
+	//
+	//代码使用 轮询 (wait.PollUntilContextTimeout) 的方式，每 500ms 查询一次资源是否存在。
 	if strings.ToLower(o.ForCondition) == "create" {
 		// TODO(soltysh): this is not ideal solution, because we're polling every .5s,
 		// and we have to use ResourceFinder, which contains the resource name.
@@ -348,6 +353,11 @@ func (o *WaitOptions) RunWait() error {
 	}
 
 	visitCount := 0
+	//o.ConditionFn(ctx, info, o) 负责 检查资源的状态：
+	//
+	//success == true 表示资源已达到目标状态。
+	//
+	//finalObject 是当前资源的最新状态。
 	visitFunc := func(info *resource.Info, err error) error {
 		if err != nil {
 			return err

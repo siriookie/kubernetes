@@ -51,6 +51,10 @@ func WithWaitGroup(handler http.Handler, longRunning apirequest.LongRunningReque
 	return withWaitGroup(handler, longRunning, wg, isRequestExemptFromRetryAfter)
 }
 
+// 用于实现优雅关闭（Graceful Shutdown）的中间件逻辑，主要功能是在服务器关闭时：
+// 管理请求的等待组（WaitGroup）
+// 区分长期运行请求和普通请求
+// 在关闭时正确处理新请求
 func withWaitGroup(handler http.Handler, longRunning apirequest.LongRunningRequestCheck, wg RequestWaitGroup, isRequestExemptFn isRequestExemptFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()

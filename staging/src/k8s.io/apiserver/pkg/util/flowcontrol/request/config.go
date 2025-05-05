@@ -66,10 +66,10 @@ type MutatingWorkEstimatorConfig struct {
 // DefaultWorkEstimatorConfig creates a new WorkEstimatorConfig with default values.
 func DefaultWorkEstimatorConfig() *WorkEstimatorConfig {
 	return &WorkEstimatorConfig{
-		MinimumSeats:                minimumSeats,
-		MaximumSeatsLimit:           maximumSeatsLimit,
+		MinimumSeats:                minimumSeats,      //控制请求估算出的 seat 值的下限。
+		MaximumSeatsLimit:           maximumSeatsLimit, //控制请求估算出的 seat 值的上限。
 		ListWorkEstimatorConfig:     defaultListWorkEstimatorConfig(),
-		MutatingWorkEstimatorConfig: defaultMutatingWorkEstimatorConfig(),
+		MutatingWorkEstimatorConfig: defaultMutatingWorkEstimatorConfig(), //用于估算 mutating 请求（比如 create/update/delete）的开销：
 	}
 }
 
@@ -81,8 +81,8 @@ func defaultListWorkEstimatorConfig() *ListWorkEstimatorConfig {
 // defaultMutatingWorkEstimatorConfig creates a new MutatingWorkEstimatorConfig with default values.
 func defaultMutatingWorkEstimatorConfig() *MutatingWorkEstimatorConfig {
 	return &MutatingWorkEstimatorConfig{
-		Enabled:                 enableMutatingWorkEstimator,
-		EventAdditionalDuration: metav1.Duration{Duration: eventAdditionalDuration},
+		Enabled:                 enableMutatingWorkEstimator,                        // 是否开启 mutating 请求的 seat 动态估算功能。
+		EventAdditionalDuration: metav1.Duration{Duration: eventAdditionalDuration}, // kube-apiserver 估算处理一个变更事件传播所需的额外耗时。
 		WatchesPerSeat:          watchesPerSeat,
 	}
 }

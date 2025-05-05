@@ -23,6 +23,7 @@ import (
 
 // WithHSTS is a simple HSTS implementation that wraps an http Handler.
 // If hstsDirectives is empty or nil, no HSTS support is installed.
+// （HTTP Strict Transport Security）
 func WithHSTS(handler http.Handler, hstsDirectives []string) http.Handler {
 	if len(hstsDirectives) == 0 {
 		return handler

@@ -144,16 +144,26 @@ func (c *cacheWatcher) stopLocked() {
 	}
 }
 
+// 尝试以非阻塞方式把一个事件 event 加入到当前 watcher 的输入通道 c.input 中。如果通道满了，就直接放弃，不会阻塞等待。
 func (c *cacheWatcher) nonblockingAdd(event *watchCacheEvent) bool {
 	// if the bookmarkAfterResourceVersion hasn't been seen
 	// we will try to deliver a bookmark event every second.
 	// the following check will discard a bookmark event
 	// if it is < than the bookmarkAfterResourceVersion
 	// so that we don't pollute the input channel
+	//如果是 Bookmark 类型的事件，
+	//
+	//且它的 ResourceVersion 比当前 watcher 想要的（bookmarkAfterResourceVersion）还小，
+	//
+	//就不发送，直接忽略这个事件。
+	//
+	//📌 目的：避免发送无效的 bookmark 事件（浪费带宽 / 资源）。
 	if event.Type == watch.Bookmark && event.ResourceVersion < c.bookmarkAfterResourceVersion {
 		return false
 	}
 	select {
+	//如果 c.input 这个 channel 没满，就把 event 发送进去，返回 true。
+	//如果满了（即发送会阻塞），就走 default，直接返回 false，放弃发送。
 	case c.input <- event:
 		c.markBookmarkAfterRvAsReceived(event)
 		return true

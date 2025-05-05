@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// 在 apiserver 即将关机时，安全地终止正在执行的 watch 请求，避免资源泄漏，并向客户端发出“稍后重试”的信号。
 func WithWatchTerminationDuringShutdown(handler http.Handler, termination apirequest.ServerShutdownSignal, wg RequestWaitGroup) http.Handler {
 	if termination == nil || wg == nil {
 		klog.Warningf("watch termination during shutdown not attached to the handler chain")
@@ -53,6 +54,7 @@ func WithWatchTerminationDuringShutdown(handler http.Handler, termination apireq
 		// attach ServerShutdownSignal to the watch request so that the
 		// watch handler loop can return as soon as the server signals
 		// that it is shutting down.
+		//将 shutdown signal 添加到请求 context 中，底层 watch 实现会监听这个 signal，提前退出。
 		ctx = apirequest.WithServerShutdownSignal(req.Context(), termination)
 		req = req.WithContext(ctx)
 

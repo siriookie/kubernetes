@@ -116,6 +116,7 @@ var (
 
 // PrintAndExitIfRequested will check if --version or --version=raw was passed
 // and, if so, print the version and exit.
+// 检查是否只打印版本信息并退出。
 func PrintAndExitIfRequested() {
 	if *versionFlag == VersionRaw {
 		fmt.Fprintf(output, "%#v\n", version.Get())

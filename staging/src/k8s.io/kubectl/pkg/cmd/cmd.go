@@ -410,58 +410,59 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 			},
 		},
 		{
-			//中级的
+			//基本的
 			Message: "Basic Commands (Intermediate):",
 			Commands: []*cobra.Command{
 				explain.NewCmdExplain("kubectl", f, o.IOStreams),
 				getCmd,
-				edit.NewCmdEdit(f, o.IOStreams),
+				edit.NewCmdEdit(f, o.IOStreams), // kubectl edit 指令，编辑完就会发送请求到api server更新yaml   ie:kubectl edit deployment <deployment-name>
 				delete.NewCmdDelete(f, o.IOStreams),
 			},
 		},
 		{
+			//部署用
 			Message: "Deploy Commands:",
 			Commands: []*cobra.Command{
-				rollout.NewCmdRollout(f, o.IOStreams),
-				scale.NewCmdScale(f, o.IOStreams),
-				autoscale.NewCmdAutoscale(f, o.IOStreams),
+				rollout.NewCmdRollout(f, o.IOStreams),     // 重启啊 暂停啊 回滚相关的命令
+				scale.NewCmdScale(f, o.IOStreams),         // sacle相关的
+				autoscale.NewCmdAutoscale(f, o.IOStreams), //创建hpa
 			},
 		},
 		{
 			Message: "Cluster Management Commands:",
 			Commands: []*cobra.Command{
-				certificates.NewCmdCertificate(f, o.IOStreams),
-				clusterinfo.NewCmdClusterInfo(f, o.IOStreams),
-				top.NewCmdTop(f, o.IOStreams),
-				drain.NewCmdCordon(f, o.IOStreams),
-				drain.NewCmdUncordon(f, o.IOStreams),
-				drain.NewCmdDrain(f, o.IOStreams),
-				taint.NewCmdTaint(f, o.IOStreams),
+				certificates.NewCmdCertificate(f, o.IOStreams), //主要用于管理 Kubernetes 证书
+				clusterinfo.NewCmdClusterInfo(f, o.IOStreams),  // 打印集群的信息
+				top.NewCmdTop(f, o.IOStreams),                  //监控pod或者node的内存、cpu使用情况
+				drain.NewCmdCordon(f, o.IOStreams),             // 用于将节点标记为不可调度
+				drain.NewCmdUncordon(f, o.IOStreams),           // 用于将节点标记为可调度
+				drain.NewCmdDrain(f, o.IOStreams),              // 用于将该节点标记为不可用并且删除所有能删除的pod
+				taint.NewCmdTaint(f, o.IOStreams),              // 给这个节点加上taint
 			},
 		},
 		{
 			Message: "Troubleshooting and Debugging Commands:",
 			Commands: []*cobra.Command{
-				describe.NewCmdDescribe("kubectl", f, o.IOStreams),
-				logs.NewCmdLogs(f, o.IOStreams),
-				attach.NewCmdAttach(f, o.IOStreams),
-				cmdexec.NewCmdExec(f, o.IOStreams),
-				portforward.NewCmdPortForward(f, o.IOStreams),
-				proxyCmd,
-				cp.NewCmdCp(f, o.IOStreams),
-				auth.NewCmdAuth(f, o.IOStreams),
-				debug.NewCmdDebug(f, o.IOStreams),
-				events.NewCmdEvents(f, o.IOStreams),
+				describe.NewCmdDescribe("kubectl", f, o.IOStreams), // kubectl describe 命令
+				logs.NewCmdLogs(f, o.IOStreams),                    // logs命令
+				attach.NewCmdAttach(f, o.IOStreams),                //attach命令
+				cmdexec.NewCmdExec(f, o.IOStreams),                 //exec命令
+				portforward.NewCmdPortForward(f, o.IOStreams),      // port forward 命令
+				proxyCmd,                            // 在本地起一个代理服务器可以通过api去和k8s进行交互
+				cp.NewCmdCp(f, o.IOStreams),         // 用于在本地和 Kubernetes Pod 容器之间复制文件或目录。
+				auth.NewCmdAuth(f, o.IOStreams),     // 验证权限相关
+				debug.NewCmdDebug(f, o.IOStreams),   //创建debug pod 来调试node或者pod
+				events.NewCmdEvents(f, o.IOStreams), //查看整个集群的事件
 			},
 		},
 		{
 			Message: "Advanced Commands:",
 			Commands: []*cobra.Command{
-				diff.NewCmdDiff(f, o.IOStreams),
-				apply.NewCmdApply("kubectl", f, o.IOStreams),
-				patch.NewCmdPatch(f, o.IOStreams),
-				replace.NewCmdReplace(f, o.IOStreams),
-				wait.NewCmdWait(f, o.IOStreams),
+				diff.NewCmdDiff(f, o.IOStreams),              // diff
+				apply.NewCmdApply("kubectl", f, o.IOStreams), // 分为serve side 的apply和client side的apply
+				patch.NewCmdPatch(f, o.IOStreams),            //patch命令
+				replace.NewCmdReplace(f, o.IOStreams),        //replace命令
+				wait.NewCmdWait(f, o.IOStreams),              // wait命令
 				kustomize.NewCmdKustomize(o.IOStreams),
 			},
 		},

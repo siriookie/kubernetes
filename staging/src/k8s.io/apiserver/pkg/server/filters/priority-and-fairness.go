@@ -101,6 +101,7 @@ func (h *priorityAndFairnessHandler) Handle(w http.ResponseWriter, r *http.Reque
 	isWatchRequest := watchVerbs.Has(requestInfo.Verb)
 
 	// Skip tracking long running non-watch requests.
+	//如果是非-watch 的 long-running 请求（如 exec、port-forward），跳过 APF 控制，直接交由 handler 处理。
 	if h.longRunningRequestCheck != nil && h.longRunningRequestCheck(r, requestInfo) && !isWatchRequest {
 		klog.V(6).Infof("Serving RequestInfo=%#+v, user.Info=%#+v as longrunning\n", requestInfo, user)
 		h.handler.ServeHTTP(w, r)
@@ -108,6 +109,7 @@ func (h *priorityAndFairnessHandler) Handle(w http.ResponseWriter, r *http.Reque
 	}
 
 	var classification *PriorityAndFairnessClassification
+	//noteFn：APF 组件会调用它来告知当前请求匹配的是哪个 FlowSchema 和 PriorityLevel。
 	noteFn := func(fs *flowcontrol.FlowSchema, pl *flowcontrol.PriorityLevelConfiguration, flowDistinguisher string) {
 		classification = &PriorityAndFairnessClassification{
 			FlowSchemaName:    fs.Name,
@@ -119,6 +121,7 @@ func (h *priorityAndFairnessHandler) Handle(w http.ResponseWriter, r *http.Reque
 		httplog.AddKeyValue(ctx, "apf_pl", truncateLogField(pl.Name))
 		httplog.AddKeyValue(ctx, "apf_fs", truncateLogField(fs.Name))
 	}
+	//estimateWork：用于估算请求消耗的 seat 数（资源占用量），供后续调度决策。
 	// estimateWork is called, if at all, after noteFn
 	estimateWork := func() flowcontrolrequest.WorkEstimate {
 		if classification == nil {
@@ -321,17 +324,19 @@ func (h *priorityAndFairnessHandler) Handle(w http.ResponseWriter, r *http.Reque
 // WithPriorityAndFairness limits the number of in-flight
 // requests in a fine-grained way.
 func WithPriorityAndFairness(
-	handler http.Handler,
-	longRunningRequestCheck apirequest.LongRunningRequestCheck,
-	fcIfc utilflowcontrol.Interface,
-	workEstimator flowcontrolrequest.WorkEstimatorFunc,
-	defaultRequestWaitLimit time.Duration,
+	handler http.Handler, //最终要处理请求的核心逻辑（比如 REST handler）——这是“被包裹”的目标。
+	longRunningRequestCheck apirequest.LongRunningRequestCheck, //用于识别是否是 “长连接请求”（如 watch、proxy、exec）。这类请求不会严格应用 P&F 限制。
+	fcIfc utilflowcontrol.Interface, //P&F 的调度接口，用于控制请求是否排队、何时放行。 如果传入的是 nil，说明未启用 P&F，函数直接返回原始 handler。
+	workEstimator flowcontrolrequest.WorkEstimatorFunc, //用于估算请求的资源占用（InitialSeats, FinalSeats, AdditionalLatency）
+	defaultRequestWaitLimit time.Duration, //请求最长可等待时间。超过后不再排队，而是直接返回 429。
 ) http.Handler {
 	if fcIfc == nil {
 		klog.Warningf("priority and fairness support not found, skipping")
 		return handler
 	}
 	initAPFOnce.Do(func() {
+		//初始化最大并发数（但实际受 P&F 控制）
+		//关联观测指标（Prometheus metric）用于监控排队等待请求数量。
 		initMaxInFlight(0, 0)
 		// Fetching these gauges is delayed until after their underlying metric has been registered
 		// so that this latches onto the efficient implementation.
@@ -340,6 +345,8 @@ func WithPriorityAndFairness(
 	})
 
 	clock := &utilsclock.RealClock{}
+	//每个请求进来时包装一个“有最大等待时间的上下文”，
+	//超过 defaultRequestWaitLimit 时请求会自动取消。
 	newReqWaitCtxFn := func(ctx context.Context) (context.Context, context.CancelFunc) {
 		return getRequestWaitContext(ctx, defaultRequestWaitLimit, clock)
 	}
@@ -349,8 +356,12 @@ func WithPriorityAndFairness(
 		longRunningRequestCheck: longRunningRequestCheck,
 		fcIfc:                   fcIfc,
 		workEstimator:           workEstimator,
-		droppedRequests:         utilflowcontrol.NewDroppedRequestsTracker(),
-		newReqWaitCtxFn:         newReqWaitCtxFn,
+		//统计 被丢弃请求的数量；
+		//分类型记录（比如读请求 vs 写请求）；
+		//用于打 Prometheus 指标，比如：
+		//apiserver_flowcontrol_rejected_requests_total
+		droppedRequests: utilflowcontrol.NewDroppedRequestsTracker(),
+		newReqWaitCtxFn: newReqWaitCtxFn,
 	}
 	return http.HandlerFunc(priorityAndFairnessHandler.Handle)
 }

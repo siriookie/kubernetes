@@ -143,8 +143,10 @@ func (o *TopNodeOptions) Validate() error {
 	return nil
 }
 
+// 从Metrics API拿数据
 func (o TopNodeOptions) RunTopNode() error {
 	var err error
+	//selector := labels.Everything()：默认选择所有节点。
 	selector := labels.Everything()
 	if len(o.Selector) > 0 {
 		selector, err = labels.Parse(o.Selector)

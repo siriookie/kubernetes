@@ -156,15 +156,34 @@ type watchCache struct {
 	waitingUntilFresh *conditionalProgressRequester
 }
 
+// 1. watchCache 的核心存储结构
+// watchCache 的底层存储由两部分组成：
+//
+// cache []*watchCacheEvent
+//
+// 一个 环形缓冲区（Ring Buffer），用于存储最近的 Watch 事件（如 Pod 创建、更新、删除）。
+//
+// 通过 startIndex 和 endIndex 实现环形逻辑。
+//
+// 用途：快速获取最近的事件流（用于 Watch 请求）。
+//
+// store storeIndexer
+//
+// 本质上是 threadSafeMap（如果未启用 BtreeWatchCache 特性）。
+//
+// 基于 map + RWMutex，并支持 多级索引（如按 namespace、label 过滤）。
+//
+// 用途：加速资源查询（如 ListPods、GetPod）。
 func newWatchCache(
-	keyFunc func(runtime.Object) (string, error),
-	eventHandler func(*watchCacheEvent),
-	getAttrsFunc func(runtime.Object) (labels.Set, fields.Set, error),
-	versioner storage.Versioner,
-	indexers *cache.Indexers,
-	clock clock.WithTicker,
-	groupResource schema.GroupResource,
-	progressRequester *conditionalProgressRequester) *watchCache {
+	keyFunc func(runtime.Object) (string, error), // 计算对象唯一键的函数
+	eventHandler func(*watchCacheEvent), // 事件回调函数
+	getAttrsFunc func(runtime.Object) (labels.Set, fields.Set, error), // 获取对象标签和字段的函数
+	versioner storage.Versioner, // 版本管理（如 ResourceVersion）
+	indexers *cache.Indexers, // 索引器（用于加速查询）
+	clock clock.WithTicker, // 时钟（用于事件时间管理）
+	groupResource schema.GroupResource, // 资源类型（如 "pods"）
+	progressRequester *conditionalProgressRequester, // 进度通知请求器
+) *watchCache {
 	wc := &watchCache{
 		capacity:            defaultLowerBoundCapacity,
 		keyFunc:             keyFunc,

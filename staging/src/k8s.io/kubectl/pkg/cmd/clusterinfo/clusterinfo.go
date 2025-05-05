@@ -55,6 +55,20 @@ type ClusterInfoOptions struct {
 	Client  *restclient.Config
 }
 
+// 1. 查看集群信息
+// kubectl cluster-info
+// 输出示例：
+// Kubernetes control plane is running at https://192.168.1.100:6443
+// CoreDNS is running at https://192.168.1.100:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+// 这个命令会显示 API Server 和一些关键服务（如 CoreDNS）的运行状态和地址。
+//
+// 2. 获取详细的集群调试信息
+// kubectl cluster-info dump
+// 这个命令会收集更详细的诊断信息，包括：
+// Pod、Service、Node、ConfigMap 等资源的 YAML 描述。
+// 日志信息（如果可用）。
+// 事件信息（如 kubectl get events）。
+// 适用于调试 Kubernetes 集群的问题。
 func NewCmdClusterInfo(restClientGetter genericclioptions.RESTClientGetter, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := &ClusterInfoOptions{
 		IOStreams: ioStreams,
@@ -96,9 +110,12 @@ func (o *ClusterInfoOptions) Run() error {
 	b := o.Builder.
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		NamespaceParam(o.Namespace).DefaultNamespace().
-		LabelSelectorParam("kubernetes.io/cluster-service=true").
+		LabelSelectorParam("kubernetes.io/cluster-service=true"). //筛选带有 kubernetes.io/cluster-service=true 标签的 Service，即集群关键服务（如 CoreDNS）。
 		ResourceTypeOrNameArgs(false, []string{"services"}...).
 		Latest()
+	//b.Do() 执行查询。
+	//Visit() 遍历所有匹配的 Service 资源。
+	//printService(o.Out, "Kubernetes control plane", o.Client.Host) 打印 API Server 地址。
 	err := b.Do().Visit(func(r *resource.Info, err error) error {
 		if err != nil {
 			return err
@@ -109,6 +126,10 @@ func (o *ClusterInfoOptions) Run() error {
 		for _, service := range services {
 			var link string
 			if len(service.Status.LoadBalancer.Ingress) > 0 {
+				//获取 ServiceList 资源，遍历所有服务。
+				//如果 Service 通过 LoadBalancer 方式暴露，则：
+				//取 ingress.IP 或 ingress.Hostname。
+				//构造 http://IP:端口 访问地址。
 				ingress := service.Status.LoadBalancer.Ingress[0]
 				ip := ingress.IP
 				if ip == "" {
@@ -132,7 +153,8 @@ func (o *ClusterInfoOptions) Run() error {
 					// format is <scheme>:<service-name>:<service-port-name>
 					name = utilnet.JoinSchemeNamePort(scheme, service.ObjectMeta.Name, port.Name)
 				}
-
+				//通过 kubectl proxy 方式访问 API 代理地址：
+				//https://<API_SERVER>/api/v1/namespaces/<namespace>/services/<service>/proxy
 				if len(o.Client.GroupVersion.Group) == 0 {
 					link = o.Client.Host + "/api/" + o.Client.GroupVersion.Version + "/namespaces/" + service.ObjectMeta.Namespace + "/services/" + name + "/proxy"
 				} else {
@@ -140,6 +162,8 @@ func (o *ClusterInfoOptions) Run() error {
 
 				}
 			}
+			//kubernetes.io/name 标签存的是 Service 的可读名称，如果没有，就用 metadata.name。
+			//printService() 输出 Service 名称和访问地址。
 			name := service.ObjectMeta.Labels["kubernetes.io/name"]
 			if len(name) == 0 {
 				name = service.ObjectMeta.Name

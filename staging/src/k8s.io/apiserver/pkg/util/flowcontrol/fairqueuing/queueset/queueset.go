@@ -305,6 +305,18 @@ const (
 // quantity per FlowSchema.
 // The queueSet's promiseFactory is invoked once if the returned Request is non-nil,
 // not invoked if the Request is nil.
+// 这段函数 StartRequest 是 Kubernetes APF 中排队限流的核心执行逻辑之一，它负责决定一个请求是否：
+// 立即执行（如没有启用排队）
+// 排队（基于 shuffle sharding 算法）
+// 被拒绝（因排队长度过长或并发资源不足）
+// StartRequest()
+// ├─ Step 0: DesiredNumQueues == 0 ?
+// │   ├─ Yes → 只检查并发 seat → 拒绝或立即执行
+// │   └─ No → 启用排队机制
+// ├─ Step 1: ShuffleShard + 入队 or 拒绝
+// │   ├─ 队列满 + 无 seat → 拒绝
+// │   └─ 队列可用 → 创建请求对象，入队
+// └─ Step 2: 从队列中调度可执行请求（公平调度）
 func (qs *queueSet) StartRequest(ctx context.Context, workEstimate *fqrequest.WorkEstimate, hashValue uint64, flowDistinguisher, fsName string, descr1, descr2 interface{}, queueNoteFn fq.QueueNoteFn) (fq.Request, bool) {
 	qs.lockAndSyncTime(ctx)
 	defer qs.lock.Unlock()

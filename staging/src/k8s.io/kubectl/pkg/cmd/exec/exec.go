@@ -303,17 +303,34 @@ func (o *StreamOptions) SetupTTY() term.TTY {
 }
 
 // Run executes a validated remote execution against a pod.
+// 实现了 kubectl exec 命令的远程执行操作，用于在 Kubernetes 集群中的某个 Pod 内部执行命令
+// kubectl exec -it my-pod -- /bin/sh
+// 命令说明
+// kubectl exec：在 Pod 内执行命令。
+// -it：
+// -i（interactive）：保持标准输入（stdin）打开，用于交互模式。
+// -t（tty）：分配一个伪终端，使终端交互更友好（类似 SSH）。
+// my-pod：Pod 名称（替换成你的 Pod）。
+// -- /bin/sh：
+// --：用于区分 kubectl 命令参数和要在容器内执行的命令。
+// /bin/sh：在容器内执行 sh Shell（如果是 Ubuntu 或 Debian，可以改为 /bin/bash）。
 func (p *ExecOptions) Run() error {
 	var err error
 	// we still need legacy pod getter when PodName in ExecOptions struct is provided,
 	// since there are any other command run this function by providing Podname with PodsGetter
 	// and without resource builder, eg: `kubectl cp`.
 	if len(p.PodName) != 0 {
+		//第一种情况（kubectl exec -it POD_NAME -- COMMAND）
+		//如果 p.PodName 存在，说明用户直接提供了 Pod 名称，则通过 p.PodClient.Pods(p.Namespace).Get() 查询该 Pod。
 		p.Pod, err = p.PodClient.Pods(p.Namespace).Get(context.TODO(), p.PodName, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
 	} else {
+		//第二种情况（kubectl exec -it -f POD_FILE -- COMMAND）
+		//如果 p.PodName 为空，说明用户提供的是YAML/JSON 文件或Pod 资源名。
+		//builder.Do().Object() 解析资源，找到目标 Pod。
+		//如果 obj 是一个列表，则报错，因为 kubectl exec 只能针对单个 Pod 执行。
 		builder := p.Builder().
 			WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 			FilenameParam(p.EnforceNamespace, &p.FilenameOptions).
@@ -338,13 +355,15 @@ func (p *ExecOptions) Run() error {
 	}
 
 	pod := p.Pod
-
+	//如果 Pod 处于 Succeeded（成功）或 Failed（失败）状态，则报错，无法执行命令。
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 		return fmt.Errorf("cannot exec into a container in a completed pod; current phase is %s", pod.Status.Phase)
 	}
 
 	containerName := p.ContainerName
 	if len(containerName) == 0 {
+		//p.ContainerName 为空，说明用户没有显式指定 --container，则从 Pod 中选择默认的容器。
+		//FindOrDefaultContainerByName() 会找到第一个匹配的容器。
 		container, err := podcmd.FindOrDefaultContainerByName(pod, containerName, p.Quiet, p.ErrOut)
 		if err != nil {
 			return err
@@ -353,11 +372,13 @@ func (p *ExecOptions) Run() error {
 	}
 
 	// ensure we can recover the terminal while attached
+	//SetupTTY() 负责初始化 TTY 交互环境，确保 kubectl exec -it 在交互模式下正确运行。
 	t := p.SetupTTY()
 
 	var sizeQueue remotecommand.TerminalSizeQueue
 	if t.Raw {
 		// this call spawns a goroutine to monitor/update the terminal size
+		//MonitorSize() 监测终端窗口大小变化，确保 kubectl exec 过程中窗口大小调整不会导致显示问题。
 		sizeQueue = t.MonitorSize(t.GetSize())
 
 		// unset p.Err if it was previously set because both stdout and stderr go over p.Out when tty is

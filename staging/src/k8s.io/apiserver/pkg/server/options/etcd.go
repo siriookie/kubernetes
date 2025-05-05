@@ -426,6 +426,12 @@ func (f *StorageFactoryRestOptionsFactory) GetRESTOptions(resource schema.GroupR
 
 // ParseWatchCacheSizes turns a list of cache size values into a map of group resources
 // to requested sizes.
+//
+//	[]string{
+//	   "apps/deployments#1000",
+//	   "core/pods#500",
+//	   "batch/jobs#200",
+//	}
 func ParseWatchCacheSizes(cacheSizes []string) (map[schema.GroupResource]int, error) {
 	watchCacheSizes := make(map[schema.GroupResource]int)
 	for _, c := range cacheSizes {

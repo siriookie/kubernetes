@@ -135,6 +135,7 @@ func (o *ResumeOptions) Validate() error {
 }
 
 // RunResume performs the execution of 'rollout resume' sub command
+// 和pause的逻辑一样
 func (o ResumeOptions) RunResume() error {
 	r := o.Builder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).

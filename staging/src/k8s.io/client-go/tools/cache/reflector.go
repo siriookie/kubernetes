@@ -118,6 +118,20 @@ type Reflector struct {
 	// See https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/3157-watch-list#design-details
 	//
 	// TODO(#115478): Consider making reflector.UseWatchList a private field. Since we implemented "api streaming" on the etcd storage layer it should work.
+	//它决定了 Reflector 在开始同步资源（如 Pod、Deployment 等）时，是采用 传统的 List + Watch 模式，还是采用 新的 WatchList（流式同步）模式。
+	//
+	//✅ 如果 UseWatchList == true：
+	//Reflector 会使用 WatchList 机制。
+	//
+	//WatchList 是一种 API Server 提供的流式同步机制，相比于传统分页 List 具有以下优势：
+	//
+	//内存开销更小；
+	//
+	//减少 APIServer 压力；
+	//
+	//快速启动同步。
+	//
+	//可以理解为：从 “列出来一堆资源，然后再 watch” → “从头开始就 watch 并实时送数据（server push）”。
 	UseWatchList *bool
 }
 
@@ -222,12 +236,22 @@ type ReflectorOptions struct {
 // "yes".  This enables you to use reflectors to periodically process
 // everything as well as incrementally processing the things that
 // change.
+// 它的主要作用是构造一个 Reflector 对象，用来不断同步 Kubernetes 资源的数据（通过 List 和 Watch）到本地缓存中。
+// 创建一个 Reflector 实例，
+// 它会调用 ListWatcher 的 List 和 Watch 方法，把资源数据源（如 etcd）中的对象同步到一个本地的 store（比如 watchCache）中。
+// 参数	说明
+// lw ListerWatcher	一个组合接口，封装了 List() 和 Watch() 的逻辑；reflector 就靠它访问资源。
+// expectedType interface{}	你期望操作的资源类型，例如 *v1.Pod；用于反射校验。
+// store Store	本地缓存结构，reflector 同步后的数据存储目标（如 watchCache）。
+// options ReflectorOptions	一些配置选项，包括名字、时钟、resync 间隔、最小 watch 超时时间等。
 func NewReflectorWithOptions(lw ListerWatcher, expectedType interface{}, store Store, options ReflectorOptions) *Reflector {
 	reflectorClock := options.Clock
+	//如果没有传自定义时钟，就使用默认的真实时钟 clock.RealClock{}。
 	if reflectorClock == nil {
 		reflectorClock = clock.RealClock{}
 	}
 	minWatchTimeout := defaultMinWatchTimeout
+	//设置 Watch 请求的最小超时时间；这个值影响 kube-apiserver watch 长连接的生命周期.默认值5 min
 	if options.MinWatchTimeout > defaultMinWatchTimeout {
 		minWatchTimeout = options.MinWatchTimeout
 	}
@@ -241,8 +265,14 @@ func NewReflectorWithOptions(lw ListerWatcher, expectedType interface{}, store S
 		// We used to make the call every 1sec (1 QPS), the goal here is to achieve ~98% traffic reduction when
 		// API server is not healthy. With these parameters, backoff will stop at [30,60) sec interval which is
 		// 0.22 QPS. If we don't backoff for 2min, assume API server is healthy and we reset the backoff.
-		backoffManager:    wait.NewExponentialBackoffManager(800*time.Millisecond, 30*time.Second, 2*time.Minute, 2.0, 1.0, reflectorClock),
-		clock:             reflectorClock,
+		backoffManager: wait.NewExponentialBackoffManager(
+			800*time.Millisecond, // 初始延迟
+			30*time.Second,       // 最大延迟
+			2*time.Minute,        // 回退上限窗口，超时就恢复
+			2.0,                  // 指数倍数
+			1.0,                  // 抖动因子
+			reflectorClock,
+		), clock: reflectorClock,
 		watchErrorHandler: WatchErrorHandler(DefaultWatchErrorHandler),
 		expectedType:      reflect.TypeOf(expectedType),
 	}

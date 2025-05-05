@@ -31,6 +31,9 @@ import (
 	"k8s.io/kubernetes/pkg/controlplane/apiserver/options"
 )
 
+// 基于主 apiserver 的配置构建一个用于 CRD（CustomResourceDefinition）
+// 相关 API 的 子 apiserver（即 apiextensions-apiserver）的配置 apiextensionsapiserver.Config，
+// 并在其中设置专门用于 CRD 存储、认证、服务解析等方面的定制行为。
 func CreateAPIExtensionsConfig(
 	kubeAPIServerConfig server.Config,
 	kubeInformers informers.SharedInformerFactory,

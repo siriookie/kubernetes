@@ -136,13 +136,17 @@ type defaultPortForwarder struct {
 	genericiooptions.IOStreams
 }
 
+// 创建 transport（HTTP 传输层）和 upgrader（用于升级 HTTP 连接到 SPDY 流）。
 func createDialer(method string, url *url.URL, opts PortForwardOptions) (httpstream.Dialer, error) {
+	//这是 kubectl port-forward 默认的传输方式。
 	transport, upgrader, err := spdy.RoundTripperFor(opts.Config)
 	if err != nil {
 		return nil, err
 	}
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, method, url)
 	if !cmdutil.PortForwardWebsockets.IsDisabled() {
+		//cmdutil.PortForwardWebsockets.IsDisabled() 检查是否禁用 WebSocket 端口转发：
+		//如果 没有禁用（即 WebSocket 可用），则尝试优先使用 WebSocket。
 		tunnelingDialer, err := portforward.NewSPDYOverWebsocketDialer(url, opts.Config)
 		if err != nil {
 			return nil, err

@@ -1019,6 +1019,12 @@ func (meal *cfgMeal) imaginePL(proto *flowcontrol.PriorityLevelConfiguration) {
 // The returned bool indicates whether the request is exempt from
 // limitation.  The startWaitingTime is when the request started
 // waiting in its queue, or `Time{}` if this did not happen.
+// startRequest 的目标是：
+// 根据请求信息找到匹配的 FlowSchema
+// 结合 FlowSchema 找到对应的 PriorityLevelConfiguration
+// 判断是否为 Exempt 类型（豁免的，不限速）
+// 如果不是 Exempt，就将请求放入队列（或失败）
+// 返回相关对象供后续处理（比如 Handle()）
 func (cfgCtlr *configController) startRequest(ctx context.Context, rd RequestDigest,
 	noteFn func(fs *flowcontrol.FlowSchema, pl *flowcontrol.PriorityLevelConfiguration, flowDistinguisher string),
 	workEstimator func() fcrequest.WorkEstimate,

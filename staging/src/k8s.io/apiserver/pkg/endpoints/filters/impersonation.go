@@ -46,12 +46,14 @@ func WithImpersonation(handler http.Handler, a authorizer.Authorizer, s runtime.
 			responsewriters.InternalError(w, req, err)
 			return
 		}
+		//2. 如果请求没有 impersonation 头，直接跳过
 		if len(impersonationRequests) == 0 {
 			handler.ServeHTTP(w, req)
 			return
 		}
 
 		ctx := req.Context()
+		//🔹3. 获取当前请求者（requestor）的身份
 		requestor, exists := request.UserFrom(ctx)
 		if !exists {
 			responsewriters.InternalError(w, req, errors.New("no user found for request"))
@@ -113,7 +115,10 @@ func WithImpersonation(handler http.Handler, a authorizer.Authorizer, s runtime.
 				responsewriters.Forbidden(ctx, actingAsAttributes, w, req, fmt.Sprintf("unknown impersonation request type: %v", impersonationRequest), s)
 				return
 			}
-
+			//对于 impersonation 中声明的每个“对象”（User、Group、ServiceAccount、Extra、UID），都需要：
+			//构造一个 authorizer.AttributesRecord
+			//调用 authorizer.Authorize() 判断 requestor 是否有权限对该对象 verb = "impersonate"
+			//若没有权限，立即返回 403 Forbidden。
 			decision, reason, err := a.Authorize(ctx, actingAsAttributes)
 			if err != nil || decision != authorizer.DecisionAllow {
 				klog.V(4).InfoS("Forbidden", "URI", req.RequestURI, "reason", reason, "err", err)
@@ -130,6 +135,10 @@ func WithImpersonation(handler http.Handler, a authorizer.Authorizer, s runtime.
 			//
 			// If 'system:unauthenticated' group has been specified we should not include
 			// the 'system:authenticated' group.
+			// 在模拟非匿名用户时，应在模拟的用户信息中包含 ‘system:authenticated’ 组：
+			// - 如果没有指定任何组
+			// - 如果指定的组中不包括 ‘system:authenticated’
+			// 如果已经指定了 ‘system:unauthenticated’ 组，则不应包含 ‘system:authenticated’ 组。
 			addAuthenticated := true
 			for _, group := range groups {
 				if group == user.AllAuthenticated || group == user.AllUnauthenticated {

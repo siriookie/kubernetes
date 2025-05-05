@@ -76,6 +76,9 @@ func withAuthorization(handler http.Handler, a authorizer.Authorizer, s runtime.
 		}()
 
 		// an authorizer like RBAC could encounter evaluation errors and still allow the request, so authorizer decision is checked before error here.
+		//判断授权结果是否是允许（Allow）
+		//如果允许，就继续调用原来的 handler.ServeHTTP，也就是让请求继续走下去
+		//同时给审计系统打一些“允许访问”的标记
 		if authorized == authorizer.DecisionAllow {
 			audit.AddAuditAnnotations(ctx,
 				decisionAnnotationKey, decisionAllow,
@@ -83,12 +86,17 @@ func withAuthorization(handler http.Handler, a authorizer.Authorizer, s runtime.
 			handler.ServeHTTP(w, req)
 			return
 		}
+		//如果 authorized 不是 Allow，而且还出现了错误（比如缓存失效、角色获取失败）
+		//返回 HTTP 500 错误（InternalError）
 		if err != nil {
 			audit.AddAuditAnnotation(ctx, reasonAnnotationKey, reasonError)
 			responsewriters.InternalError(w, req, err)
 			return
 		}
-
+		//授权结果是拒绝，且没有错误（正常拒绝）
+		//打日志（klog.V(4) 是 debug 级别的日志）
+		//给审计系统打个“拒绝访问”的标记
+		//返回 HTTP 403 Forbidden 错误，告诉客户端没有权限
 		klog.V(4).InfoS("Forbidden", "URI", req.RequestURI, "reason", reason)
 		audit.AddAuditAnnotations(ctx,
 			decisionAnnotationKey, decisionForbid,
@@ -97,6 +105,7 @@ func withAuthorization(handler http.Handler, a authorizer.Authorizer, s runtime.
 	})
 }
 
+// 从上下文中提取 user 和 requestInfo 信息，并打包成 authorizer.AttributesRecord，提供给鉴权逻辑使用。
 func GetAuthorizerAttributes(ctx context.Context) (authorizer.Attributes, error) {
 	attribs := authorizer.AttributesRecord{}
 
@@ -111,6 +120,7 @@ func GetAuthorizerAttributes(ctx context.Context) (authorizer.Attributes, error)
 	}
 
 	// Start with common attributes that apply to resource and non-resource requests
+	//这些字段是用来判断这个请求的“意图”和“对象”的，最终会传给 RBAC 决定是否放行。
 	attribs.ResourceRequest = requestInfo.IsResourceRequest
 	attribs.Path = requestInfo.Path
 	attribs.Verb = requestInfo.Verb
@@ -121,7 +131,8 @@ func GetAuthorizerAttributes(ctx context.Context) (authorizer.Attributes, error)
 	attribs.Subresource = requestInfo.Subresource
 	attribs.Namespace = requestInfo.Namespace
 	attribs.Name = requestInfo.Name
-
+	//开启这个 feature gate 后，RBAC 可以根据 selector 来限制访问（比如只能看 app=nginx 的 Pod）
+	//这部分只是尝试解析，如果出错了也会返回错误信息字段但不 panic
 	if utilfeature.DefaultFeatureGate.Enabled(genericfeatures.AuthorizeWithSelectors) {
 		// parsing here makes it easy to keep the AttributesRecord type value-only and avoids any mutex copies when
 		// doing shallow copies in other steps.

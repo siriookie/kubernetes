@@ -63,6 +63,13 @@ var (
 		kubectl cordon foo`))
 )
 
+// cordon 命令的作用是将某个节点标记为不可调度（unschedulable），防止新的 Pod 被调度到该节点。
+// cordon 命令的作用
+// kubectl cordon <NODE>
+// ✅ 将 <NODE> 标记为 Unschedulable，阻止 Kubernetes 调度新的 Pod 到该节点。
+// 🔄 不会驱逐（删除）已有的 Pod，只是防止新 Pod 调度到这个节点。
+// 如果你想同时 驱逐节点上的 Pod 并且阻止调度，应该用：
+// kubectl drain <NODE> --ignore-daemonsets --delete-emptydir-data
 func NewCmdCordon(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewDrainCmdOptions(f, ioStreams)
 
@@ -222,6 +229,70 @@ func NewCmdDrain(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra
 			cmdutil.CheckErr(o.RunDrain())
 		},
 	}
+	//kubectl drain 命令的选项（Flags）
+
+	//cmd.Flags().BoolVar(&o.drainer.Force, "force", o.drainer.Force, "Continue even if there are pods that do not declare a controller.")
+	//📌 --force
+	//
+	//如果节点上有非 DaemonSet、非 ReplicaSet 控制的 Pod，默认情况下 kubectl drain 会失败。
+	//
+	//--force 允许强制删除这些 Pod。
+
+	//cmd.Flags().BoolVar(&o.drainer.IgnoreAllDaemonSets, "ignore-daemonsets", o.drainer.IgnoreAllDaemonSets, "Ignore DaemonSet-managed pods.")
+	//📌 --ignore-daemonsets
+	//
+	//DaemonSet Pod（如 kube-proxy、fluentd）不会被 kubectl drain 删除。
+	//
+	//这个参数让 kubectl drain 忽略 DaemonSet Pod，而不是报错退出。
+
+	//cmd.Flags().BoolVar(&o.drainer.DeleteEmptyDirData, "delete-emptydir-data", o.drainer.DeleteEmptyDirData, "Continue even if there are pods using emptyDir (local data that will be deleted when the node is drained).")
+	//📌 --delete-emptydir-data
+	//
+	//Pod 使用 emptyDir 卷时，默认 kubectl drain 会失败（因为 emptyDir 存储在本地磁盘，驱逐后数据会丢失）。
+	//
+	//这个参数允许强制删除 emptyDir 数据。
+
+	//cmd.Flags().IntVar(&o.drainer.GracePeriodSeconds, "grace-period", o.drainer.GracePeriodSeconds, "Period of time in seconds given to each pod to terminate gracefully.")
+	//📌 --grace-period=<秒数>
+	//
+	//指定 Pod 终止的宽限时间。
+	//
+	//默认是 Pod 的 terminationGracePeriodSeconds 值，如果设为 -1，则使用 Pod 自己的默认值。
+
+	//cmd.Flags().DurationVar(&o.drainer.Timeout, "timeout", o.drainer.Timeout, "The length of time to wait before giving up, zero means infinite")
+	//📌 --timeout=<时间>
+	//
+	//如果 kubectl drain 等待 Pod 迁移超时，就停止执行。
+	//
+	//默认值是无限等待。
+
+	//cmd.Flags().StringVarP(&o.drainer.PodSelector, "pod-selector", "", o.drainer.PodSelector, "Label selector to filter pods on the node")
+	//📌 --pod-selector=<标签>
+	//
+	//只驱逐匹配指定标签的 Pod，而不会驱逐所有 Pod。
+
+	//cmd.Flags().BoolVar(&o.drainer.DisableEviction, "disable-eviction", o.drainer.DisableEviction, "Force drain to use delete, even if eviction is supported.")
+	//📌 --disable-eviction
+	//
+	//默认 kubectl drain 使用 Eviction API 驱逐 Pod（尊重 PodDisruptionBudget）。
+	//
+	//如果加上这个参数，则 直接 delete Pod，不受 PodDisruptionBudget 限制。
+
+	//cmd.Flags().IntVar(&o.drainer.SkipWaitForDeleteTimeoutSeconds, "skip-wait-for-delete-timeout", o.drainer.SkipWaitForDeleteTimeoutSeconds, "If pod DeletionTimestamp older than N seconds, skip waiting for the pod.")
+	//📌 --skip-wait-for-delete-timeout=<秒数>
+	//
+	//如果 Pod DeletionTimestamp 超过指定时间，kubectl drain 会跳过等待，继续执行。
+	//
+	//5. 额外的 kubectl 选项
+
+	//cmdutil.AddChunkSizeFlag(cmd, &o.drainer.ChunkSize)
+	//cmdutil.AddDryRunFlag(cmd)
+	//cmdutil.AddLabelSelectorFlagVar(cmd, &o.drainer.Selector)
+	//--chunk-size：批量处理 Pod 的数量，优化性能。
+	//
+	//--dry-run：不执行真实操作，只打印将要执行的动作。
+	//
+	//--selector：过滤 Pod，仅驱逐符合特定标签的 Pod。
 	cmd.Flags().BoolVar(&o.drainer.Force, "force", o.drainer.Force, "Continue even if there are pods that do not declare a controller.")
 	cmd.Flags().BoolVar(&o.drainer.IgnoreAllDaemonSets, "ignore-daemonsets", o.drainer.IgnoreAllDaemonSets, "Ignore DaemonSet-managed pods.")
 	cmd.Flags().BoolVar(&o.drainer.DeleteEmptyDirData, "delete-emptydir-data", o.drainer.DeleteEmptyDirData, "Continue even if there are pods using emptyDir (local data that will be deleted when the node is drained).")
@@ -321,6 +392,7 @@ func (o *DrainCmdOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args [
 }
 
 // RunDrain runs the 'drain' command
+// drain会把该节点设置成不可调度，并且删除该节点上的能删除的所有pod
 func (o *DrainCmdOptions) RunDrain() error {
 	if err := o.RunCordonOrUncordon(true); err != nil {
 		return err
@@ -363,6 +435,7 @@ func (o *DrainCmdOptions) RunDrain() error {
 }
 
 func (o *DrainCmdOptions) deleteOrEvictPodsSimple(nodeInfo *resource.Info) error {
+	// 查询 API 服务器 获取该节点上的 Pod
 	list, errs := o.drainer.GetPodsForDeletion(nodeInfo.Name)
 	if errs != nil {
 		return utilerrors.NewAggregate(errs)
@@ -399,6 +472,17 @@ func (o *DrainCmdOptions) deleteOrEvictPodsSimple(nodeInfo *resource.Info) error
 // RunCordonOrUncordon runs either Cordon or Uncordon.  The desired value for
 // "Unschedulable" is passed as the first arg.
 func (o *DrainCmdOptions) RunCordonOrUncordon(desired bool) error {
+	//如果 desired == true，执行 cordon（让节点不可调度）。
+	//
+	//如果 desired == false，执行 uncordon（恢复节点调度）。
+	//
+	//遍历 o.nodeInfos 里所有的节点，对每个节点：
+	//
+	//检查是否需要更新 Unschedulable 状态
+	//
+	//如果需要更新，就发送 API 请求修改节点状态
+	//
+	//如果不需要更新，就打印已是目标状态
 	cordonOrUncordon := "cordon"
 	if !desired {
 		cordonOrUncordon = "un" + cordonOrUncordon
@@ -419,6 +503,11 @@ func (o *DrainCmdOptions) RunCordonOrUncordon(desired bool) error {
 			}
 
 			if updateRequired := c.UpdateIfRequired(desired); !updateRequired {
+				//UpdateIfRequired(desired) 检查节点当前的 Unschedulable 状态是否和 desired 相同：
+				//
+				//如果 desired == true，但节点已经 Unschedulable == true，就不需要更新。
+				//
+				//如果 desired == false，但节点 Unschedulable == false，也不需要更新。
 				printObj, err := o.ToPrinter(already(desired))
 				if err != nil {
 					fmt.Fprintf(o.ErrOut, "error: %v\n", err)
@@ -427,6 +516,7 @@ func (o *DrainCmdOptions) RunCordonOrUncordon(desired bool) error {
 				printObj(nodeInfo.Object, o.Out)
 			} else {
 				if o.drainer.DryRunStrategy != cmdutil.DryRunClient {
+					// 去变更node的该字段
 					err, patchErr := c.PatchOrReplace(o.drainer.Client, o.drainer.DryRunStrategy == cmdutil.DryRunServer)
 					if patchErr != nil {
 						printError(patchErr)

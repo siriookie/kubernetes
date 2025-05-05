@@ -21,6 +21,9 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"fmt"
+	"github.com/google/uuid"
+	"golang.org/x/crypto/cryptobyte"
+	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 	"net"
 	"net/http"
 	"os"
@@ -31,10 +34,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/google/uuid"
-	"golang.org/x/crypto/cryptobyte"
-	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -146,7 +145,11 @@ type Config struct {
 	// Requires generic profiling enabled
 	EnableContentionProfiling bool
 	EnableMetrics             bool
-
+	// 什么是 PostStartHook？
+	//在 Kubernetes 的 apiserver 启动过程中，有一类机制叫做 PostStartHook：
+	//它们是一些在 HTTP 服务器启动之后、真正对外提供服务之前执行的初始化任务。
+	//通常用于启动控制器、定期任务、资源注册等。
+	//这些 hook 都是以 map[string]PostStartHookConfigEntry 的形式注册进来的，string 是该 hook 的名字。
 	DisabledPostStartHooks sets.String
 	// done values in this values for this map are ignored.
 	PostStartHooks map[string]PostStartHookConfigEntry
@@ -386,6 +389,7 @@ func init() {
 func NewConfig(codecs serializer.CodecFactory) *Config {
 	defaultHealthChecks := []healthz.HealthChecker{healthz.PingHealthz, healthz.LogHealthz}
 	var id string
+	//这样每个 apiserver 实例都会有唯一的 ID，便于在集群中标识自己（如用于租约、调试、日志）。
 	if utilfeature.DefaultFeatureGate.Enabled(genericfeatures.APIServerIdentity) {
 		hostname, err := hostnameFunc()
 		if err != nil {
@@ -411,31 +415,38 @@ func NewConfig(codecs serializer.CodecFactory) *Config {
 		hash := sha256.Sum256(hashData)
 		id = "apiserver-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(hash[:16]))
 	}
+	//这个结构用于 apiserver 生命周期的管理，比如：
+	//
+	//接收到终止信号后通知其他 goroutine；
+	//
+	//控制 long-running watch 请求何时终止等。
 	lifecycleSignals := newLifecycleSignals()
 
 	return &Config{
-		Serializer:                     codecs,
-		BuildHandlerChainFunc:          DefaultBuildHandlerChain,
+		Serializer:            codecs,
+		BuildHandlerChainFunc: DefaultBuildHandlerChain,
+		//通过这两个 WaitGroup，可以控制 apiserver 在关闭前等待短请求和 watch 请求优雅结束。
 		NonLongRunningRequestWaitGroup: new(utilwaitgroup.SafeWaitGroup),
 		WatchRequestWaitGroup:          &utilwaitgroup.RateLimitedSafeWaitGroup{},
-		LegacyAPIGroupPrefixes:         sets.NewString(DefaultLegacyAPIPrefix),
-		DisabledPostStartHooks:         sets.NewString(),
-		PostStartHooks:                 map[string]PostStartHookConfigEntry{},
-		HealthzChecks:                  append([]healthz.HealthChecker{}, defaultHealthChecks...),
-		ReadyzChecks:                   append([]healthz.HealthChecker{}, defaultHealthChecks...),
-		LivezChecks:                    append([]healthz.HealthChecker{}, defaultHealthChecks...),
-		EnableIndex:                    true,
-		EnableDiscovery:                true,
-		EnableProfiling:                true,
-		DebugSocketPath:                "",
-		EnableMetrics:                  true,
-		MaxRequestsInFlight:            400,
-		MaxMutatingRequestsInFlight:    200,
-		RequestTimeout:                 time.Duration(60) * time.Second,
-		MinRequestTimeout:              1800,
-		StorageInitializationTimeout:   time.Minute,
-		LivezGracePeriod:               time.Duration(0),
-		ShutdownDelayDuration:          time.Duration(0),
+
+		LegacyAPIGroupPrefixes:       sets.NewString(DefaultLegacyAPIPrefix), //租约api前缀
+		DisabledPostStartHooks:       sets.NewString(),
+		PostStartHooks:               map[string]PostStartHookConfigEntry{},
+		HealthzChecks:                append([]healthz.HealthChecker{}, defaultHealthChecks...),
+		ReadyzChecks:                 append([]healthz.HealthChecker{}, defaultHealthChecks...),
+		LivezChecks:                  append([]healthz.HealthChecker{}, defaultHealthChecks...),
+		EnableIndex:                  true, //是否启用索引页
+		EnableDiscovery:              true, //发现 API
+		EnableProfiling:              true, //性能分析
+		DebugSocketPath:              "",
+		EnableMetrics:                true, //指标收集
+		MaxRequestsInFlight:          400,  //启用apf后不用这个了
+		MaxMutatingRequestsInFlight:  200,  //启用apf后不用这个了
+		RequestTimeout:               time.Duration(60) * time.Second,
+		MinRequestTimeout:            1800,
+		StorageInitializationTimeout: time.Minute,
+		LivezGracePeriod:             time.Duration(0),
+		ShutdownDelayDuration:        time.Duration(0),
 		// 1.5MB is the default client request size in bytes
 		// the etcd server should accept. See
 		// https://github.com/etcd-io/etcd/blob/release-3.4/embed/config.go#L56.
@@ -456,14 +467,17 @@ func NewConfig(codecs serializer.CodecFactory) *Config {
 
 		// Default to treating watch as a long-running operation
 		// Generic API servers have no inherent long-running subresources
-		LongRunningFunc:                     genericfilters.BasicLongRunningRequestCheck(sets.NewString("watch"), sets.NewString()),
-		lifecycleSignals:                    lifecycleSignals,
+		//判断哪些请求是长连接，比如 watch。长连接不会被正常的超时、熔断逻辑处理，会额外处理。
+		LongRunningFunc:  genericfilters.BasicLongRunningRequestCheck(sets.NewString("watch"), sets.NewString()),
+		lifecycleSignals: lifecycleSignals,
+		//这些是对 etcd 中数据对象的计数和版本控制，支持 apiserver 与 etcd 的一致性管理。
 		StorageObjectCountTracker:           flowcontrolrequest.NewStorageObjectCountTracker(),
 		ShutdownWatchTerminationGracePeriod: time.Duration(0),
 
 		APIServerID:           id,
 		StorageVersionManager: storageversion.NewDefaultManager(),
-		TracerProvider:        tracing.NewNoopTracerProvider(),
+		//目前默认是不启用 tracing 的（noop 表示空实现），可以替换为支持 OpenTelemetry 的实现。
+		TracerProvider: tracing.NewNoopTracerProvider(),
 	}
 }
 
@@ -753,11 +767,17 @@ var defaultAllowedMediaTypes = []string{
 // New creates a new server which logically combines the handling chain with the passed server.
 // name is used to differentiate for logging. The handler chain in particular can be difficult as it starts delegating.
 // delegationTarget may not be nil.
+// completedConfig 是配置项（比如认证、授权、审计、特性开关等）。
+// name 是这个 APIServer 的名字，用于日志标识。
+// delegationTarget 是一个上层的 APIServer，未命中当前 server 路由时会向它转发（比如 Aggregator 的情况）。
+// 返回值：初始化好的 *GenericAPIServer
 func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*GenericAPIServer, error) {
+	//c.Serializer == nil：没有指定序列化器（序列化器负责将资源转成 json、protobuf、yaml 等格式），报错。
 	if c.Serializer == nil {
 		return nil, fmt.Errorf("Genericapiserver.New() called with config.Serializer == nil")
 	}
 	allowedMediaTypes := defaultAllowedMediaTypes
+	//校验 Serializer 支持的 MediaType 是否在允许的范围（默认支持 JSON、protobuf，如果开启了 CBORServingAndStorage，也支持 CBOR）。
 	if utilfeature.DefaultFeatureGate.Enabled(genericfeatures.CBORServingAndStorage) {
 		allowedMediaTypes = append(allowedMediaTypes, runtime.ContentTypeCBOR)
 	}
@@ -985,6 +1005,7 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 
 	// use the UnprotectedHandler from the delegation target to ensure that we don't attempt to double authenticator, authorize,
 	// or some other part of the filter chain in delegation cases.
+	//根据是否启用了 Index 页面（EnableIndex）并且没有设置委托目标的 UnprotectedHandler，来决定是否使用一个自定义的 NotFoundHandler 来列出可访问路径。
 	if delegationTarget.UnprotectedHandler() == nil && c.EnableIndex {
 		s.Handler.NonGoRestfulMux.NotFoundHandler(routes.IndexLister{
 			StatusCode:   http.StatusNotFound,
@@ -1001,18 +1022,24 @@ func BuildHandlerChainWithStorageVersionPrecondition(apiHandler http.Handler, c 
 	return DefaultBuildHandlerChain(handler, c)
 }
 
+// 这段代码是 Kubernetes apiserver 的 HTTP handler 链构建器，也就是：
+// ✅ 给每一个 API 请求套一层层“中间件”过滤器（filters）进行处理、拦截、认证、限流、审计等逻辑。
 func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 	handler := apiHandler
-
-	handler = filterlatency.TrackCompleted(handler)
-	handler = genericapifilters.WithAuthorization(handler, c.Authorization.Authorizer, c.Serializer)
+	handler = filterlatency.TrackCompleted(handler)                                                  //追踪完成指标
+	handler = genericapifilters.WithAuthorization(handler, c.Authorization.Authorizer, c.Serializer) //鉴权
 	handler = filterlatency.TrackStarted(handler, c.TracerProvider, "authorization")
 
 	if c.FlowControl != nil {
 		workEstimatorCfg := flowcontrolrequest.DefaultWorkEstimatorConfig()
+		//参数名	                             作用
+		//c.StorageObjectCountTracker.Get	获取当前 list 请求目标资源的对象数（用于估算 list 请求的 seat）
+		//c.FlowControl.GetInterestedWatchCount	获取当前有多少个客户端对目标资源在 watch（估算变更请求传播影响）
+		//workEstimatorCfg	之前的 DefaultWorkEstimatorConfig() 的结果，控制估算逻辑行为
+		//c.FlowControl.GetMaxSeats	获取当前系统配置或计算出的最大 seat 限额（用于限流、保护系统）
 		requestWorkEstimator := flowcontrolrequest.NewWorkEstimator(
 			c.StorageObjectCountTracker.Get, c.FlowControl.GetInterestedWatchCount, workEstimatorCfg, c.FlowControl.GetMaxSeats)
-		handler = filterlatency.TrackCompleted(handler)
+		handler = filterlatency.TrackCompleted(handler) //记录耗时
 		handler = genericfilters.WithPriorityAndFairness(handler, c.LongRunningFunc, c.FlowControl, requestWorkEstimator, c.RequestTimeout/4)
 		handler = filterlatency.TrackStarted(handler, c.TracerProvider, "priorityandfairness")
 	} else {
@@ -1020,11 +1047,11 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 	}
 
 	handler = filterlatency.TrackCompleted(handler)
-	handler = genericapifilters.WithImpersonation(handler, c.Authorization.Authorizer, c.Serializer)
+	handler = genericapifilters.WithImpersonation(handler, c.Authorization.Authorizer, c.Serializer) //伪装别人的拦截器
 	handler = filterlatency.TrackStarted(handler, c.TracerProvider, "impersonation")
 
 	handler = filterlatency.TrackCompleted(handler)
-	handler = genericapifilters.WithAudit(handler, c.AuditBackend, c.AuditPolicyRuleEvaluator, c.LongRunningFunc)
+	handler = genericapifilters.WithAudit(handler, c.AuditBackend, c.AuditPolicyRuleEvaluator, c.LongRunningFunc) //审计相关
 	handler = filterlatency.TrackStarted(handler, c.TracerProvider, "audit")
 
 	failedHandler := genericapifilters.Unauthorized(c.Serializer)
@@ -1079,17 +1106,23 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 }
 
 func installAPI(name string, s *GenericAPIServer, c *Config) {
+	//如果配置启用了首页功能（EnableIndex = true），则安装一个默认首页路由。
+	//页面用于展示当前 apiserver 支持的路径，便于开发者或调试人员查看服务能力。
 	if c.EnableIndex {
 		routes.Index{}.Install(s.listedPathProvider, s.Handler.NonGoRestfulMux)
 	}
+	//开启 EnableProfiling 时，安装 pprof 接口，常见于 /debug/pprof。
 	if c.EnableProfiling {
 		routes.Profiling{}.Install(s.Handler.NonGoRestfulMux)
+		//如果启用了 EnableContentionProfiling，则设置 SetBlockProfileRate(1)，开启锁竞争分析。
 		if c.EnableContentionProfiling {
 			goruntime.SetBlockProfileRate(1)
 		}
 		// so far, only logging related endpoints are considered valid to add for these debug flags.
 		routes.DebugFlags{}.Install(s.Handler.NonGoRestfulMux, "v", routes.StringFlagPutHandler(logs.GlogSetter))
 	}
+	//如果配置了 DebugSocketPath，就会生成一个 DebugSocket，用于监听 Unix socket 接口（不走 HTTP）。
+	//与普通路由一样，也提供 profiling 和调试 flag。
 	if s.UnprotectedDebugSocket != nil {
 		s.UnprotectedDebugSocket.InstallProfiling()
 		s.UnprotectedDebugSocket.InstallDebugFlag("v", routes.StringFlagPutHandler(logs.GlogSetter))
@@ -1097,7 +1130,7 @@ func installAPI(name string, s *GenericAPIServer, c *Config) {
 			goruntime.SetBlockProfileRate(1)
 		}
 	}
-
+	//如果开启了指标功能，就安装 Prometheus 指标采集接口（如 /metrics）。
 	if c.EnableMetrics {
 		if c.EnableProfiling {
 			routes.MetricsWithReset{}.Install(s.Handler.NonGoRestfulMux)
@@ -1107,10 +1140,11 @@ func installAPI(name string, s *GenericAPIServer, c *Config) {
 			slis.SLIMetrics{}.Install(s.Handler.NonGoRestfulMux)
 		}
 	}
-
+	//安装 /version 路由，返回 apiserver 的版本信息（Git commit、构建时间等）。
 	routes.Version{Version: c.EffectiveVersion.BinaryVersion().Info()}.Install(s.Handler.GoRestfulContainer)
 
-	if c.EnableDiscovery {
+	if c.EnableDiscovery { //安装 API discovery 接口，比如 /apis 和 /api。
+		//如果启用了 AggregatedDiscovery（增强型 API 发现，支持 aggregation layer 扩展），就使用包装后的 handler。
 		if c.FeatureGate.Enabled(genericfeatures.AggregatedDiscoveryEndpoint) {
 			wrapped := discoveryendpoint.WrapAggregatedDiscoveryToHandler(s.DiscoveryGroupManager, s.AggregatedDiscoveryGroupManager)
 			s.Handler.GoRestfulContainer.Add(wrapped.GenerateWebService("/apis", metav1.APIGroupList{}))

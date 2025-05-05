@@ -4377,6 +4377,7 @@ func (dd *DeploymentDescriber) Describe(namespace, name string, describerSetting
 	return describeDeployment(d, oldRSs, newRSs, events)
 }
 
+// 格式化输出 Deployment 的详细信息。
 func describeDeployment(d *appsv1.Deployment, oldRSs []*appsv1.ReplicaSet, newRSs []*appsv1.ReplicaSet, events *corev1.EventList) (string, error) {
 	selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
 	if err != nil {

@@ -184,10 +184,13 @@ func (o *DescribeOptions) Run() error {
 		return err
 	}
 
-	allErrs := []error{}
+	var allErrs []error
 	infos, err := r.Infos()
 	if err != nil {
 		if apierrors.IsNotFound(err) && len(o.BuilderArgs) == 2 {
+			//如果资源 不存在，并且用户输入的是 <resource> <name> 这种格式，
+			//则调用 DescribeMatchingResources 进行模糊匹配（比如 kubectl describe pod mypod 时 mypod 不存在，
+			//可能会尝试其他 pod）。
 			return o.DescribeMatchingResources(err, o.BuilderArgs[0], o.BuilderArgs[1])
 		}
 		allErrs = append(allErrs, err)
@@ -235,6 +238,14 @@ func (o *DescribeOptions) Run() error {
 	return utilerrors.NewAggregate(allErrs)
 }
 
+// 假设我们运行：
+// kubectl describe pod mypod
+// 但 mypod 不存在，那么 kubectl 会：
+// 解析 resource = "pod"，prefix = "mypod"。
+// 获取当前 Namespace 下的所有 Pod。
+// 遍历 Pod，查找 Name 以 "mypod" 开头的 Pod。
+// 如果找到，比如 mypod-xyz123，则 kubectl 输出其描述信息。
+// 如果没找到，返回 "pod mypod not found"。
 func (o *DescribeOptions) DescribeMatchingResources(originalError error, resource, prefix string) error {
 	r := o.NewBuilder().
 		Unstructured().

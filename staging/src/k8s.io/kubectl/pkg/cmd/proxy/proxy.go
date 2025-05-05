@@ -206,6 +206,12 @@ func (o ProxyOptions) Validate() error {
 	return nil
 }
 
+// kubectl proxy 命令是用来启动一个本地代理，代理通过 Kubernetes API 与集群进行交互。以下是一些常见的使用场景和命令示例：
+//
+// 示例 1: 启动代理并监听本地端口 8001
+// kubectl proxy --port=8001
+// 一旦代理运行，你可以通过以下命令来获取集群信息：
+// curl http://localhost:8001/api/v1/namespaces
 // RunProxy checks given arguments and executes command
 func (o ProxyOptions) RunProxy() error {
 	server, err := proxy.NewServer(o.staticDir, o.apiPrefix, o.staticPrefix, o.filter, o.clientConfig, o.keepalive, o.appendServerPath)
@@ -217,9 +223,11 @@ func (o ProxyOptions) RunProxy() error {
 	// Separate listening from serving so we can report the bound port
 	// when it is chosen by os (eg: port == 0)
 	var l net.Listener
+	//如果 o.unixSocket 是空字符串，则调用 server.Listen 方法，通过指定的 address 和 port 启动监听。
 	if o.unixSocket == "" {
 		l, err = server.Listen(o.address, o.port)
 	} else {
+		//否则，调用 server.ListenUnix 方法，通过 Unix 套接字启动监听。
 		l, err = server.ListenUnix(o.unixSocket)
 	}
 	if err != nil {

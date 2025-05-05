@@ -30,6 +30,28 @@ var _ metav1.ListInterface = &UnstructuredList{}
 // UnstructuredList allows lists that do not have Golang structs
 // registered to be manipulated generically. This can be used to deal
 // with the API lists from a plug-in.
+// UnstructuredList 适用于没有 Golang 结构体的列表
+//
+// 类似于 Unstructured 处理单个对象，UnstructuredList 允许你操作对象列表，即 API 服务器返回的一批资源。
+// 适用于插件 API 或 CRD（自定义资源定义）列表，无需定义具体的 Golang 结构体。
+// 核心字段
+//
+// go
+// 复制代码
+//
+//	type UnstructuredList struct {
+//	   Object map[string]interface{}
+//	   Items  []Unstructured `json:"items"`
+//	}
+//
+// Object map[string]interface{}：
+// 用于存储 Kubernetes 资源列表的元数据，例如 apiVersion、kind 等信息。
+// Items []Unstructured：
+// 存储资源列表，其中的每个元素都是 Unstructured，即一个 JSON 兼容的 map[string]interface{}，可以是任意 Kubernetes 资源对象。
+// 使用场景
+//
+// 你希望获取某类资源的列表，但不想或不能使用特定的 Golang 结构体。
+// 适用于插件 API 或 CRD，例如查询 CustomResourceDefinition（CRD）的实例列表。
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +k8s:deepcopy-gen=true
 type UnstructuredList struct {

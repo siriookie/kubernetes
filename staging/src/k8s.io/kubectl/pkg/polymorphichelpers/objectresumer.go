@@ -28,6 +28,8 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
+//把spec.paused的状态改成false
+
 func defaultObjectResumer(obj runtime.Object) ([]byte, error) {
 	switch obj := obj.(type) {
 	case *extensionsv1beta1.Deployment:

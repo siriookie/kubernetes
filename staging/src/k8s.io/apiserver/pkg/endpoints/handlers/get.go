@@ -67,7 +67,7 @@ func getResourceHandler(scope *RequestScope, getter getterFunc) http.HandlerFunc
 			return
 		}
 		ctx = request.WithNamespace(ctx, namespace)
-
+		//进行响应格式协商（JSON / Protobuf）
 		outputMediaType, _, err := negotiation.NegotiateOutputMediaType(req, scope.Serializer, scope)
 		if err != nil {
 			scope.err(err, w, req)
@@ -93,6 +93,8 @@ func GetResource(r rest.Getter, scope *RequestScope) http.HandlerFunc {
 			// check for export
 			options := metav1.GetOptions{}
 			if values := req.URL.Query(); len(values) > 0 {
+				//从 URL 查询参数中解析出 GetOptions（常见字段如 resourceVersion）。
+				//特别处理了 export 字段（这是一个废弃字段，现在如果你传入会报错）：
 				if len(values["export"]) > 0 {
 					exportBool := true
 					exportStrings := values["export"]

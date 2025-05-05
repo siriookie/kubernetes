@@ -157,6 +157,10 @@ func (cfgCtlr *configController) Handle(ctx context.Context, requestDigest Reque
 	workEstimator func() fcrequest.WorkEstimate,
 	queueNoteFn fq.QueueNoteFn,
 	execFn func()) {
+	//核心：根据 FlowSchema 和 PriorityLevel 进行匹配与处理。
+	//isExempt == true：优先级层为 Exempt，立即执行。
+	//req == nil：表示没有获取执行资源（seat）或入队失败，应丢弃。
+	//startWaitingTime != time.Time{}：请求曾经排队过（无论是否最终执行）。
 	fs, pl, isExempt, req, startWaitingTime := cfgCtlr.startRequest(ctx, requestDigest, noteFn, workEstimator, queueNoteFn)
 	queued := startWaitingTime != time.Time{}
 	if req == nil {

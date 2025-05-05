@@ -356,6 +356,7 @@ func (o LogsOptions) Validate() error {
 	return nil
 }
 
+// 获取 Pod 的日志
 // RunLogs retrieves a pod log
 func (o LogsOptions) RunLogs() error {
 	var requests map[corev1.ObjectReference]rest.ResponseWrapper

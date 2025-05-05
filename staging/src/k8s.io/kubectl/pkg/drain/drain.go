@@ -112,6 +112,9 @@ type waitForDeleteParams struct {
 // CheckEvictionSupport uses Discovery API to find out if the server support
 // eviction subresource If support, it will return its groupVersion; Otherwise,
 // it will return an empty GroupVersion
+// CheckEvictionSupport 函数的目的是使用 Kubernetes 的 Discovery API 来检测集群是否支持 Eviction 子资源。它通过获取 Kubernetes 集群的 API 资源信息，
+// 检查是否存在名为 Eviction 的资源，并返回其对应的 GroupVersion。如果集群不支持该资源，返回空的 GroupVersion
+// 有些 Kubernetes 集群可能不支持 Eviction 操作，特别是旧版本的集群或某些配置不完全的集群
 func CheckEvictionSupport(clientset kubernetes.Interface) (schema.GroupVersion, error) {
 	discoveryClient := clientset.Discovery()
 
@@ -178,7 +181,10 @@ func (d *Helper) EvictPod(pod corev1.Pod, evictionGroupVersion schema.GroupVersi
 // or error if it cannot list pods. All pods that are ready to be deleted can be obtained with .Pods(),
 // and string with all warning can be obtained with .Warnings(), and .Errors() for all errors that
 // occurred during deletion.
+// 获取一个节点上可以被驱逐（删除）的 Pod。
 func (d *Helper) GetPodsForDeletion(nodeName string) (*PodDeleteList, []error) {
+	//解析用户指定的 PodSelector（即 kubectl drain --pod-selector=xxx）。
+	//如果解析失败，直接返回错误。
 	labelSelector, err := labels.Parse(d.PodSelector)
 	if err != nil {
 		return nil, []error{err}
@@ -187,12 +193,15 @@ func (d *Helper) GetPodsForDeletion(nodeName string) (*PodDeleteList, []error) {
 	podList := &corev1.PodList{}
 	initialOpts := &metav1.ListOptions{
 		LabelSelector: labelSelector.String(),
-		FieldSelector: fields.SelectorFromSet(fields.Set{"spec.nodeName": nodeName}).String(),
+		FieldSelector: fields.SelectorFromSet(fields.Set{"spec.nodeName": nodeName}).String(), //只获取 运行在 nodeName 上的 Pod
 		Limit:         d.ChunkSize,
 	}
-
+	//FollowContinue 进行分页查询：
+	//Kubernetes API 在 List() 时可能返回 metadata.continue 字段，表示需要继续请求下一页数据。
 	err = resource.FollowContinue(initialOpts, func(options metav1.ListOptions) (runtime.Object, error) {
+		//NamespaceAll：获取所有命名空间下的 Pod。 如果查询失败，用 EnhanceListError() 处理错误并返回。
 		newPods, err := d.Client.CoreV1().Pods(metav1.NamespaceAll).List(d.getContext(), options)
+
 		if err != nil {
 			podR := corev1.SchemeGroupVersion.WithResource(corev1.ResourcePods.String())
 			return nil, resource.EnhanceListError(err, options, podR.String())
@@ -250,8 +259,9 @@ func (d *Helper) DeleteOrEvictPods(pods []corev1.Pod) error {
 	getPodFn := func(namespace, name string) (*corev1.Pod, error) {
 		return d.Client.CoreV1().Pods(namespace).Get(d.getContext(), name, metav1.GetOptions{})
 	}
-
+	// 正常的k8s都是走evict，老版本的可能会去删除pod
 	if !d.DisableEviction {
+		//如果 DisableEviction 为 false，则继续检查是否支持驱逐。
 		evictionGroupVersion, err := CheckEvictionSupport(d.Client)
 		if err != nil {
 			return err
@@ -265,6 +275,18 @@ func (d *Helper) DeleteOrEvictPods(pods []corev1.Pod) error {
 	return d.deletePods(pods, getPodFn)
 }
 
+// 主要功能：
+// 驱逐多个 Pod： 该函数会并行驱逐多个 Pod（通过并发的方式执行 evict 操作），并等待所有 Pod 被成功驱逐或出错。
+//
+// 超时机制： 通过 context.WithTimeout 为整个驱逐过程设置全局超时，如果超时则会终止驱逐过程。
+//
+// Dry Run： 在某些情况下，可能是 Dry Run（即仅模拟驱逐操作），这时并不真正执行驱逐操作，而是输出信息。
+//
+// 重试机制： 对于一些暂时性的错误（如 TooManyRequests，即请求过多），该函数会重试驱逐操作，并在错误发生时休眠一段时间（5秒），然后再重试。
+//
+// 处理命名空间删除中的 Pod： 如果 Pod 所在的命名空间正在删除，则会处理该情况，避免对这些 Pod 执行驱逐操作。
+//
+// 等待 Pod 删除： 在驱逐操作完成后，函数会等待 Pod 被删除，确保 Pod 被完全清除。
 func (d *Helper) evictPods(pods []corev1.Pod, evictionGroupVersion schema.GroupVersion, getPodFn func(namespace, name string) (*corev1.Pod, error)) error {
 	returnCh := make(chan error, 1)
 	// 0 timeout means infinite, we use MaxInt64 to represent it.
@@ -297,7 +319,7 @@ func (d *Helper) evictPods(pods []corev1.Pod, evictionGroupVersion schema.GroupV
 				default:
 				}
 
-				// Create a temporary pod so we don't mutate the pod in the loop.
+				// Create a temporary pod so we don't  the pod in the loop.
 				activePod := pod
 				if refreshPod {
 					freshPod, err := getPodFn(pod.Namespace, pod.Name)
@@ -308,7 +330,10 @@ func (d *Helper) evictPods(pods []corev1.Pod, evictionGroupVersion schema.GroupV
 					}
 					refreshPod = false
 				}
-
+				//调用 EvictPod 函数对每个 Pod 执行驱逐操作。如果成功，则跳出循环。如果驱逐失败，会根据不同的错误类型做出相应处理。
+				//对于某些错误，如 apierrors.IsNotFound，表示 Pod 不再存在，可以跳出循环。
+				//对于 TooManyRequests 错误，会进行重试，并在重试前休眠 5 秒。
+				//如果 Pod 所在的命名空间正在删除（NamespaceTerminatingCause 错误），则会特别处理并重试。
 				err := d.EvictPod(activePod, evictionGroupVersion)
 				if err == nil {
 					break

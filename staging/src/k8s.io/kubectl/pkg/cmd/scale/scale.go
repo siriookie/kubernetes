@@ -103,6 +103,8 @@ func NewScaleOptions(ioStreams genericiooptions.IOStreams) *ScaleOptions {
 }
 
 // NewCmdScale returns a cobra command with the appropriate configuration and flags to run scale
+// 假设你有一个名为 nginx-deployment 的 Deployment，当前副本数是 3，你想将副本数缩放到 5：
+// kubectl scale deployment nginx-deployment --replicas=5
 func NewCmdScale(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewScaleOptions(ioStreams)
 
@@ -209,8 +211,9 @@ func (o *ScaleOptions) RunScale() error {
 	// Because we want to proceed for other valid resources and
 	// at the end of the function, we'll return this
 	// to show invalid resources to the user.
+	//通过 Infos() 获取经过筛选后的资源信息（infos）。如果获取失败，infoErr 记录错误
 	infos, infoErr := r.Infos()
-
+	//如果用户指定了 --resource-version 且资源数量大于 1，则返回错误，因为该参数仅适用于单一资源。
 	if len(o.ResourceVersion) != 0 && len(infos) > 1 {
 		return fmt.Errorf("cannot use --resource-version with multiple resources")
 	}
@@ -219,8 +222,10 @@ func (o *ScaleOptions) RunScale() error {
 	// we avoid a Scale GET that may or may not succeed
 	var precondition *scale.ScalePrecondition
 	if o.CurrentReplicas != -1 || len(o.ResourceVersion) > 0 {
+		//如果用户指定了 CurrentReplicas 或 ResourceVersion，就创建一个缩放前置条件。前置条件表示只有当前副本数符合条件或资源版本符合条件时才执行缩放。
 		precondition = &scale.ScalePrecondition{Size: o.CurrentReplicas, ResourceVersion: o.ResourceVersion}
 	}
+	//重试缩放操作，最大重试时间为 5 分钟，间隔为 1 秒
 	retry := scale.NewRetryParams(1*time.Second, 5*time.Minute)
 
 	var waitForReplicas *scale.RetryParams
@@ -228,7 +233,7 @@ func (o *ScaleOptions) RunScale() error {
 		waitForReplicas = scale.NewRetryParams(1*time.Second, o.Timeout)
 	}
 
-	if len(infos) == 0 {
+	if len(infos) == 0 { //如果没有找到要缩放的资源
 		if infoErr != nil {
 			return fmt.Errorf("no objects passed to scale %w", infoErr)
 		}
@@ -238,6 +243,7 @@ func (o *ScaleOptions) RunScale() error {
 	for _, info := range infos {
 		mapping := info.ResourceMapping()
 		if o.dryRunStrategy == cmdutil.DryRunClient {
+			//// 如果是 DryRun，打印资源信息并继续
 			if err := o.PrintObj(info.Object, o.Out); err != nil {
 				return err
 			}

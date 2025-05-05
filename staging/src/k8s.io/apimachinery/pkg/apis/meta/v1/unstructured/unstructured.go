@@ -34,7 +34,37 @@ import (
 //
 // WARNING: This object has accessors for the v1 standard metadata. You *MUST NOT* use this
 // type if you are dealing with objects that are not in the server meta v1 schema.
+// Unstructured 是 Kubernetes apimachinery 中的一个类型，允许操作未注册 Golang 结构体的对象，通常用于处理动态 API 对象，特别是在插件或者自定义资源（CRD）场景下。
 //
+// 详细解读
+// 支持操作没有 Golang 结构体的对象：
+//
+// 在 Kubernetes 的 API 交互中，通常对象是有特定的 Golang 结构体（如 corev1.Pod）的，但有些情况下，我们可能需要处理一些没有对应 Golang 结构体的对象（如 CRD 或者扩展 API 资源）。
+// Unstructured 允许你以通用 JSON 结构的方式操作这些对象。
+// 本质上是一个 JSON 兼容的 map：
+//
+// Unstructured 主要的数据存储在 Object map[string]interface{} 里，它的值可以是：
+// string
+// float
+// int
+// bool
+// []interface{}（JSON 数组）
+// map[string]interface{}（JSON 对象）
+// 仍然具有 TypeMeta 功能：
+//
+// 也就是说，即使它是非结构化的，仍然可以获取 kind（对象类型）和 apiVersion（API 版本）。
+// 警告（WARNING）：
+//
+// 它提供了一些标准 metadata（比如 metadata.name、metadata.namespace）的访问器。
+// 不能用于 不是 meta v1 规范的对象，否则可能会导致 API 访问异常。
+// TODO 备注：
+//
+// 代码中提到未来可能会将序列化逻辑和字段访问器拆分成不同的部分，以提高灵活性。
+// 应用场景
+// Kubernetes 动态资源处理：
+// 当你处理CRD（自定义资源定义）或插件 API，但没有 Golang 结构体定义时，可以用 Unstructured 进行操作。
+// 通用 API 客户端：
+// 例如 dynamic.Interface 返回的对象就是 Unstructured，你可以直接解析 map[string]interface{} 结构，而不需要转换成具体的 Golang 结构体。
 // TODO: make the serialization part of this type distinct from the field accessors.
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +k8s:deepcopy-gen=true

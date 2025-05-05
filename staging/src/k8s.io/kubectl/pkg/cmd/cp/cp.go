@@ -89,7 +89,9 @@ func NewCopyOptions(ioStreams genericiooptions.IOStreams) *CopyOptions {
 	}
 }
 
-// NewCmdCp creates a new Copy command.
+// NewCmdCp creates a new Copy command
+// 用于在本地和 Kubernetes Pod 容器之间复制文件或目录。
+// 解析命令行参数，支持从 本地 → Pod 或 Pod → 本地 复制文件。
 func NewCmdCp(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewCopyOptions(ioStreams)
 
@@ -235,6 +237,10 @@ func (o *CopyOptions) Validate() error {
 
 // Run performs the execution
 func (o *CopyOptions) Run() error {
+	//通过 extractFileSpec() 解析源路径和目标路径，并返回一个 FileSpec 结构：
+	//srcSpec.PodName：如果 srcSpec 是 Pod 路径，则 PodName 非空，否则为空。
+	//srcSpec.File.String()：表示具体的文件路径。
+	//这一步的目的是 确定复制操作涉及的是本地文件还是 Pod 内部的文件。
 	srcSpec, err := extractFileSpec(o.args[0])
 	if err != nil {
 		return err
@@ -297,10 +303,30 @@ func (o *CopyOptions) checkDestinationIsDir(dest fileSpec) error {
 	}
 }
 
+//代码整体流程
+//假设你运行：
+
+// kubectl cp ./local-file mypod:/app/data
+// 检查本地文件是否存在，如果不存在返回错误。
+// 创建 io.Pipe() 作为数据流管道：
+// writer 由 makeTar() 负责写入本地文件的 tar 归档。
+// reader 传输 tar 归档到 kubectl exec 进程。
+// 构造 tar 命令 在 Pod 里执行：
+// tar -xmf - -C /app/data
+// 这个命令从 stdin 读取 tar 归档并解压到 /app/data/。
+// 启动 kubectl exec：
+// 通过 options.StreamOptions.IOStreams.In = reader 从 tar 归档流读取数据并传输到 Pod。
+// kubectl exec 在 Pod 里运行 tar，最终完成文件传输。
 func (o *CopyOptions) copyToPod(src, dest fileSpec, options *exec.ExecOptions) error {
+	//确保 src.File 存在于本地，否则直接返回错误。
 	if _, err := os.Stat(src.File.String()); err != nil {
 		return fmt.Errorf("%s doesn't exist in local filesystem", src.File)
 	}
+	//io.Pipe() 创建一个管道：
+	//
+	//writer 负责打包 tar 并写入数据。
+	//
+	//reader 负责从 writer 读取数据并传输给 kubectl exec 进程。
 	reader, writer := io.Pipe()
 
 	srcFile := src.File.(localPath)
@@ -315,7 +341,8 @@ func (o *CopyOptions) copyToPod(src, dest fileSpec, options *exec.ExecOptions) e
 		// That's why, we should shortcut the process in here.
 		return err
 	}
-
+	//调用 makeTar() 把 srcFile 归档为 tar 并写入 writer。
+	//writer 连接着 reader，而 reader 最终会被 kubectl exec 读取。
 	go func(src localPath, dest remotePath, writer io.WriteCloser) {
 		defer writer.Close()
 		cmdutil.CheckErr(makeTar(src, dest, writer))
@@ -346,6 +373,7 @@ func (o *CopyOptions) copyToPod(src, dest fileSpec, options *exec.ExecOptions) e
 
 	options.Command = cmdArr
 	options.Executor = &exec.DefaultRemoteExecutor{}
+	//执行 kubectl exec 命令，将 tar 数据传输并解压到 Pod。
 	return o.execute(options)
 }
 
@@ -500,6 +528,15 @@ func recursiveTar(srcDir, srcFile localPath, destDir, destFile remotePath, tw *t
 	return nil
 }
 
+// untarAll() 主要用于解压 kubectl cp 传输的 tar 包，并写入本地文件系统：
+// 读取 tar 文件流，遍历其中的文件。
+// 检查文件路径是否合法，防止 tar 文件被篡改。
+// 计算目标路径，确保解压后的文件存放到正确的位置。
+// 处理不同类型的文件：
+// 目录 → mkdir
+// 符号链接 → 跳过
+// 普通文件 → io.Copy() 复制内容
+// 防止路径穿越攻击，避免写入敏感目录。
 func (o *CopyOptions) untarAll(ns, pod string, prefix string, src remotePath, dest localPath, reader io.Reader) error {
 	symlinkWarningPrinted := false
 	// TODO: use compression here?

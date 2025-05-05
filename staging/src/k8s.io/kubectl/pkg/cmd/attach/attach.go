@@ -101,6 +101,11 @@ func NewAttachOptions(streams genericiooptions.IOStreams) *AttachOptions {
 }
 
 // NewCmdAttach returns the attach Cobra command
+// kubectl attach 的主要用途
+// 查看容器的标准输出 (stdout) 和标准错误 (stderr)
+// 通过标准输入 (stdin) 与容器内的进程交互
+// 调试已经运行的应用
+// 不会启动新的进程，而是连接到已有进程
 func NewCmdAttach(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewAttachOptions(streams)
 	cmd := &cobra.Command{
@@ -264,7 +269,7 @@ func (o *AttachOptions) Run() error {
 		if err != nil {
 			return err
 		}
-
+		//如果 Pod 处于 Succeeded 或 Failed 状态，返回错误，无法连接。
 		if o.Pod.Status.Phase == corev1.PodSucceeded || o.Pod.Status.Phase == corev1.PodFailed {
 			return fmt.Errorf("cannot attach a container in a completed pod; current phase is %s", o.Pod.Status.Phase)
 		}
@@ -272,6 +277,9 @@ func (o *AttachOptions) Run() error {
 	}
 
 	// check for TTY
+	//o.containerToAttachTo(o.Pod) 获取要附加的容器。
+	//如果用户指定了 TTY（即 -t 选项），但容器不支持 TTY，则关闭 TTY 并打印警告。
+	//如果容器本身是 TTY，但用户没开启 TTY，则强制开启 TTY，否则可能会报 Unrecognized input header 错误。
 	containerToAttach, err := o.containerToAttachTo(o.Pod)
 	if err != nil {
 		return fmt.Errorf("cannot attach to the container: %v", err)

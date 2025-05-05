@@ -71,6 +71,14 @@ var (
 )
 
 // NewCmdRolloutPause returns a Command instance for 'rollout pause' sub command
+// 示例
+// （1）暂停 Deployment 更新
+// kubectl rollout pause deployment my-deployment
+// 效果：
+//
+// my-deployment 的 .spec 变更不会立即触发滚动更新
+//
+// 需要 kubectl rollout resume 解除暂停
 func NewCmdRolloutPause(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := &PauseOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("paused").WithTypeSetter(scheme.Scheme),
@@ -156,7 +164,7 @@ func (o *PauseOptions) RunPause() error {
 		// aggregation of errors.
 		allErrs = append(allErrs, err)
 	}
-
+	// 传入需要变更的函数，计算出patches
 	patches := set.CalculatePatches(infos, scheme.DefaultJSONEncoder(), set.PatchFn(o.Pauser))
 
 	if len(patches) == 0 && len(allErrs) == 0 {
@@ -166,7 +174,7 @@ func (o *PauseOptions) RunPause() error {
 
 	for _, patch := range patches {
 		info := patch.Info
-
+		//如果 patch.Err 发生错误，则记录错误信息，跳过该资源，继续处理其他资源。
 		if patch.Err != nil {
 			resourceString := info.Mapping.Resource.Resource
 			if len(info.Mapping.Resource.Group) > 0 {
@@ -175,7 +183,7 @@ func (o *PauseOptions) RunPause() error {
 			allErrs = append(allErrs, fmt.Errorf("error: %s %q %v", resourceString, info.Name, patch.Err))
 			continue
 		}
-
+		//如果 patch.Patch 为空，说明资源已经处于暂停状态，则直接打印 "already paused"，跳过该资源。
 		if string(patch.Patch) == "{}" || len(patch.Patch) == 0 {
 			printer, err := o.ToPrinter("already paused")
 			if err != nil {
@@ -187,7 +195,7 @@ func (o *PauseOptions) RunPause() error {
 			}
 			continue
 		}
-
+		//调用 Patch 方法，向 Kubernetes API 服务器发送 Patch 请求，修改资源，将 spec.paused = true。
 		obj, err := resource.NewHelper(info.Client, info.Mapping).
 			WithFieldManager(o.fieldManager).
 			Patch(info.Namespace, info.Name, types.StrategicMergePatchType, patch.Patch, nil)
@@ -197,6 +205,7 @@ func (o *PauseOptions) RunPause() error {
 		}
 
 		info.Refresh(obj, true)
+		//使用 o.ToPrinter("paused") 生成输出，并打印 "paused" 状态。
 		printer, err := o.ToPrinter("paused")
 		if err != nil {
 			allErrs = append(allErrs, err)
@@ -206,6 +215,6 @@ func (o *PauseOptions) RunPause() error {
 			allErrs = append(allErrs, err)
 		}
 	}
-
+	//如果有多个错误，NewAggregate 将它们组合成一个错误返回，而不是立即终止，保证所有资源都被尝试处理。
 	return utilerrors.NewAggregate(allErrs)
 }

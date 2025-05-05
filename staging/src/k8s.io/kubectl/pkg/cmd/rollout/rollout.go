@@ -53,6 +53,19 @@ var (
 		`)
 )
 
+// kubectl rollout 有多个子命令：
+//
+// kubectl rollout history —— 查看 Deployment、DaemonSet、StatefulSet 的历史记录。
+//
+// kubectl rollout pause —— 暂停资源的滚动更新。
+//
+// kubectl rollout resume —— 继续之前暂停的滚动更新。
+//
+// kubectl rollout undo —— 回滚到之前的某个版本。
+//
+// kubectl rollout status —— 查看滚动更新的状态。
+//
+// kubectl rollout restart —— 重新启动 Deployment/DaemonSet。
 // NewCmdRollout returns a Command instance for 'rollout' sub command
 func NewCmdRollout(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{

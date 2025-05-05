@@ -77,6 +77,9 @@ func NewRolloutUndoOptions(streams genericiooptions.IOStreams) *UndoOptions {
 }
 
 // NewCmdRolloutUndo returns a Command instance for the 'rollout undo' sub command
+// 镜像回滚
+// 示例：回滚到指定的版本
+// kubectl rollout undo deployment/nginx --to-revision=2
 func NewCmdRolloutUndo(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewRolloutUndoOptions(streams)
 

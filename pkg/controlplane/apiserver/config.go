@@ -118,10 +118,12 @@ func BuildGenericConfig(
 	storageFactory *serverstorage.DefaultStorageFactory,
 	lastErr error,
 ) {
-	genericConfig = genericapiserver.NewConfig(legacyscheme.Codecs)
+	genericConfig = genericapiserver.NewConfig(legacyscheme.Codecs) //创建默认配置实例
 	genericConfig.Flagz = s.Flagz
 	genericConfig.MergedResourceConfig = resourceConfig
-
+	//设置常规参数（如 minRequestTimeout、maxRequestBodyBytes 等）。
+	//设置 HTTPS server 的监听地址、证书。
+	//设置 loopback client（自身访问自身 API 的配置）。
 	if lastErr = s.GenericServerRunOptions.ApplyTo(genericConfig); lastErr != nil {
 		return
 	}
@@ -134,6 +136,7 @@ func BuildGenericConfig(
 	// Since not every generic apiserver has to support protobufs, we
 	// cannot default to it in generic apiserver and need to explicitly
 	// set it in kube-apiserver.
+	//配置 loopback client 使用 protobuf 和不启用压缩（因为走的是本地通信，不需要压缩）。
 	genericConfig.LoopbackClientConfig.ContentConfig.ContentType = "application/vnd.kubernetes.protobuf"
 	// Disable compression for self-communication, since we are going to be
 	// on a fast local network
@@ -151,6 +154,7 @@ func BuildGenericConfig(
 		}
 		return obj, nil
 	}
+	//创建用于监听集群资源变化的 informer 工厂（用于认证、授权、审计等子系统）
 	versionedInformers = clientgoinformers.NewSharedInformerFactoryWithOptions(clientgoExternalClient, 10*time.Minute, clientgoinformers.WithTransform(trim))
 
 	if lastErr = s.Features.ApplyTo(genericConfig, clientgoExternalClient, versionedInformers); lastErr != nil {
@@ -188,7 +192,8 @@ func BuildGenericConfig(
 	} else {
 		s.Etcd.StorageConfig.Transport.TracerProvider = noopoteltrace.NewTracerProvider()
 	}
-
+	//基于 etcd 的配置和资源编码规则创建一个 storageFactory。
+	//这个 factory 负责给每个资源对象选择合适的 etcd 存储路径、编码方式等。
 	storageFactoryConfig := kubeapiserver.NewStorageFactoryConfig()
 	storageFactoryConfig.CurrentVersion = genericConfig.EffectiveVersion
 	storageFactoryConfig.APIResourceConfig = genericConfig.MergedResourceConfig

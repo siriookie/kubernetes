@@ -74,6 +74,7 @@ type Scheme struct {
 
 	// versionPriority is a map of groups to ordered lists of versions for those groups indicating the
 	// default priorities of these versions as registered in the scheme
+	//存储了 API 组（group）及其优先级排序的版本（versions）
 	versionPriority map[string][]string
 
 	// observedVersions keeps track of the order we've seen versions during type registration
@@ -615,13 +616,21 @@ func (s *Scheme) PrioritizedVersionsForGroup(group string) []schema.GroupVersion
 
 // PrioritizedVersionsAllGroups returns all known versions in their priority order.  Groups are random, but
 // versions for a single group are prioritized
+// 返回所有已知的 GroupVersion（API 组和版本），并按照优先级排序。
 func (s *Scheme) PrioritizedVersionsAllGroups() []schema.GroupVersion {
 	ret := []schema.GroupVersion{}
+	//s.versionPriority 是一个 map[string][]string，存储了 API 组（group）及其优先级排序的版本（versions）。
 	for group, versions := range s.versionPriority {
 		for _, version := range versions {
 			ret = append(ret, schema.GroupVersion{Group: group, Version: version})
 		}
 	}
+	//s.observedVersions 可能是 程序运行时动态发现的 API 版本。
+	//遍历 s.observedVersions，检查它是否已经在 ret 里：
+	//
+	//如果已经存在（found == true），则跳过，避免重复添加。
+	//
+	//如果不存在，则添加到 ret。
 	for _, observedVersion := range s.observedVersions {
 		found := false
 		for _, existing := range ret {

@@ -139,8 +139,9 @@ func (o *RolloutHistoryOptions) Validate() error {
 }
 
 // Run performs the execution of 'rollout history' sub command
+// 获取 Kubernetes 资源的 滚动更新历史（Rollout History），并将其格式化输出。
 func (o *RolloutHistoryOptions) Run() error {
-
+	//这里没设置visitor，所以Do()里面设置的visitor是空的，然后下面真正调用了r.visit去访问apiserver 拿到资源
 	r := o.Builder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		NamespaceParam(o.Namespace).DefaultNamespace().
@@ -150,11 +151,11 @@ func (o *RolloutHistoryOptions) Run() error {
 		ContinueOnError().
 		Latest().
 		Flatten().
-		Do()
+		Do() //Do() 执行查询，返回 r（资源访问对象）。
 	if err := r.Err(); err != nil {
 		return err
 	}
-
+	//判断是否需要格式化输出
 	if o.PrintFlags.OutputFlagSpecified() {
 		printer, err := o.PrintFlags.ToPrinter()
 		if err != nil {
@@ -165,12 +166,17 @@ func (o *RolloutHistoryOptions) Run() error {
 			if err != nil {
 				return err
 			}
-
+			//通过 info.ResourceMapping() 获取资源映射（Resource Mapping）。
+			//
+			//o.HistoryViewer(o.RESTClientGetter, mapping) 获取历史查看器 historyViewer。
+			//
+			//historyViewer.GetHistory(info.Namespace, info.Name) 获取 historyInfo，它是一个 revision 版本号到历史信息的映射。
 			mapping := info.ResourceMapping()
 			historyViewer, err := o.HistoryViewer(o.RESTClientGetter, mapping)
 			if err != nil {
 				return err
 			}
+			// 拿到 resource和版本号的mapping
 			historyInfo, err := historyViewer.GetHistory(info.Namespace, info.Name)
 			if err != nil {
 				return err

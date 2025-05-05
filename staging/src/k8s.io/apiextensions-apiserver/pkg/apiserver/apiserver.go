@@ -122,6 +122,7 @@ func (cfg *Config) Complete() CompletedConfig {
 }
 
 // New returns a new instance of CustomResourceDefinitions from the given config.
+// apiextensions-apiserver 的核心启动逻辑，负责初始化和运行支持 CRD（CustomResourceDefinition，自定义资源定义）相关 API 的 APIServer。
 func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget) (*CustomResourceDefinitions, error) {
 	genericServer, err := c.GenericConfig.New("apiextensions-apiserver", delegationTarget)
 	if err != nil {

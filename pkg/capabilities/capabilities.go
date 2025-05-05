@@ -61,6 +61,8 @@ func Initialize(c Capabilities) {
 }
 
 // Setup the capability set.  It wraps Initialize for improving usability.
+// 配置是否允许运行 --privileged 容器；
+// 设置连接带宽的最大速率；
 func Setup(allowPrivileged bool, perConnectionBytesPerSec int64) {
 	Initialize(Capabilities{
 		AllowPrivileged:                        allowPrivileged,

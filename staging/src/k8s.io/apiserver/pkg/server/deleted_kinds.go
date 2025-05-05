@@ -53,6 +53,7 @@ type ResourceExpirationEvaluator interface {
 	ShouldServeForVersion(majorRemoved, minorRemoved int) bool
 }
 
+// 检查传入的 currentVersion（当前 Kubernetes 版本）是否为 nil，如果是，则返回错误。
 func NewResourceExpirationEvaluator(currentVersion *apimachineryversion.Version) (ResourceExpirationEvaluator, error) {
 	if currentVersion == nil {
 		return nil, fmt.Errorf("empty NewResourceExpirationEvaluator currentVersion")
@@ -62,9 +63,11 @@ func NewResourceExpirationEvaluator(currentVersion *apimachineryversion.Version)
 		strictRemovedHandlingInAlpha: false,
 	}
 	// Only keeps the major and minor versions from input version.
+	//从 currentVersion 中提取 Major（主版本号，如 1）和 Minor（次版本号，如 22），并组合成 MajorMinor 格式（如 1.22），存储到 ret.currentVersion。
 	ret.currentVersion = apimachineryversion.MajorMinor(currentVersion.Major(), currentVersion.Minor())
+	//检查 currentVersion 的 PreRelease 字段是否包含 "alpha"，如果是，则 ret.isAlpha = true，表示当前运行的是 Alpha 版本的 Kubernetes。
 	ret.isAlpha = strings.Contains(currentVersion.PreRelease(), "alpha")
-
+	//控制是否在 Alpha 版本中严格处理已移除的 API（如果设为 true，则已移除的 API 会直接拒绝请求，而不是继续兼容）。
 	if envString, ok := os.LookupEnv("KUBE_APISERVER_STRICT_REMOVED_API_HANDLING_IN_ALPHA"); !ok {
 		// do nothing
 	} else if envBool, err := strconv.ParseBool(envString); err != nil {
@@ -72,7 +75,7 @@ func NewResourceExpirationEvaluator(currentVersion *apimachineryversion.Version)
 	} else {
 		ret.strictRemovedHandlingInAlpha = envBool
 	}
-
+	//控制是否在 API 被正式移除后，仍然多保留一个版本（如果设为 true，则即使 API 已标记为移除，仍然会继续提供服务一段时间）
 	if envString, ok := os.LookupEnv("KUBE_APISERVER_SERVE_REMOVED_APIS_FOR_ONE_RELEASE"); !ok {
 		// do nothing
 	} else if envBool, err := strconv.ParseBool(envString); err != nil {

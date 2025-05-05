@@ -30,6 +30,7 @@ import (
 )
 
 // NewRESTStorage returns an APIGroupInfo object that will work against apiservice.
+// 构造并返回一个 APIGroupInfo 对象，供 apiserver 注册 apiservice 相关资源的 REST 存储接口。
 func NewRESTStorage(apiResourceConfigSource serverstorage.APIResourceConfigSource, restOptionsGetter generic.RESTOptionsGetter, shouldServeBeta bool) genericapiserver.APIGroupInfo {
 	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(apiregistration.GroupName, aggregatorscheme.Scheme, metav1.ParameterCodec, aggregatorscheme.Codecs)
 

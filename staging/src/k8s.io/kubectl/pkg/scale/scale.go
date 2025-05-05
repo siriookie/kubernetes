@@ -81,13 +81,28 @@ func NewRetryParams(interval, timeout time.Duration) *RetryParams {
 }
 
 // ScaleCondition is a closure around Scale that facilitates retries via util.wait
-func ScaleCondition(r Scaler, precondition *ScalePrecondition, namespace, name string, count uint, updatedResourceVersion *string, gvr schema.GroupVersionResource, dryRun bool) wait.ConditionWithContextFunc {
+func ScaleCondition(r Scaler, // 资源缩放器
+	precondition *ScalePrecondition, // 预检查条件
+	namespace, name string, // 资源命名空间 & 资源名称
+	count uint, // 目标副本数
+	updatedResourceVersion *string, // 记录最新 ResourceVersion
+	gvr schema.GroupVersionResource, // 资源的 GVR 标识
+	dryRun bool, // 是否 DryRun
+) wait.ConditionWithContextFunc {
 	return func(context.Context) (bool, error) {
 		rv, err := r.ScaleSimple(namespace, name, precondition, count, gvr, dryRun)
 		if updatedResourceVersion != nil {
+			//存储 ScaleSimple 返回的 ResourceVersion（更新后的版本号）。
 			*updatedResourceVersion = rv
 		}
 		// Retry only on update conflicts.
+		//"Conflict"（冲突）通常发生在并发修改资源时，如：
+		//
+		//A 进程获取了资源 deployment
+		//
+		//B 进程修改了 deployment
+		//
+		//A 进程尝试更新 deployment，但因为它的 ResourceVersion 过期，导致更新失败。
 		if apierrors.IsConflict(err) {
 			return false, nil
 		}
@@ -117,8 +132,15 @@ type genericScaler struct {
 var _ Scaler = &genericScaler{}
 
 // ScaleSimple updates a scale of a given resource. It returns the resourceVersion of the scale if the update was successful.
-func (s *genericScaler) ScaleSimple(namespace, name string, preconditions *ScalePrecondition, newSize uint, gvr schema.GroupVersionResource, dryRun bool) (updatedResourceVersion string, err error) {
+// ScaleSimple 这个函数的作用是调整 Kubernetes 资源（如 Deployment、StatefulSet、ReplicaSet）的副本数，并返回更新后的 ResourceVersion
+func (s *genericScaler) ScaleSimple(namespace, name string, // 资源所在的命名空间 和 资源名称
+	preconditions *ScalePrecondition, // 预检查条件（可选）
+	newSize uint, // 目标副本数
+	gvr schema.GroupVersionResource, // 资源的 GroupVersionResource（标识资源类型）
+	dryRun bool, // 是否为 DryRun（不真正执行，只模拟）
+) (updatedResourceVersion string, err error) {
 	if preconditions != nil {
+		//先获取当前 scale 资源：
 		scale, err := s.scaleNamespacer.Scales(namespace).Get(context.TODO(), gvr.GroupResource(), name, metav1.GetOptions{})
 		if err != nil {
 			return "", err
@@ -126,6 +148,7 @@ func (s *genericScaler) ScaleSimple(namespace, name string, preconditions *Scale
 		if err = preconditions.validate(scale); err != nil {
 			return "", err
 		}
+		//更新 scale.Spec.Replicas：
 		scale.Spec.Replicas = int32(newSize)
 		updateOptions := metav1.UpdateOptions{}
 		if dryRun {
@@ -157,6 +180,8 @@ func (s *genericScaler) ScaleSimple(namespace, name string, preconditions *Scale
 	if dryRun {
 		patchOptions.DryRun = []string{metav1.DryRunAll}
 	}
+	//使用 Patch 方法来更新 spec.replicas：
+	//更轻量级，只修改 replicas 字段，不影响其他字段。
 	updatedScale, err := s.scaleNamespacer.Scales(namespace).Patch(context.TODO(), gvr, name, types.MergePatchType, patch, patchOptions)
 	if err != nil {
 		return "", err
@@ -166,6 +191,8 @@ func (s *genericScaler) ScaleSimple(namespace, name string, preconditions *Scale
 
 // Scale updates a scale of a given resource to a new size, with optional precondition check (if preconditions is not nil),
 // optional retries (if retry is not nil), and then optionally waits for the status to reach desired count.
+// 这个函数 Scale 是 Kubernetes 中的一个通用缩放（scaling）实现，用于调整某个资源（如 Deployment、ReplicaSet、StatefulSet 等）的副本数。
+// 它支持预检查条件、重试机制，以及等待副本数达到期望值。
 func (s *genericScaler) Scale(namespace, resourceName string, newSize uint, preconditions *ScalePrecondition, retry, waitForReplicas *RetryParams, gvr schema.GroupVersionResource, dryRun bool) error {
 	if retry == nil {
 		// make it try only once, immediately

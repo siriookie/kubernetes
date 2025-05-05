@@ -114,6 +114,11 @@ func (m *PathRecorderMux) trackCallers(path string) {
 
 // refreshMuxLocked creates a new mux and must be called while locked.  Otherwise the view of handlers may
 // not be consistent
+// 🔄 每次添加或修改路由（例如）
+// Handle(path string, handler http.Handler)
+// HandlePrefix(prefix string, handler http.Handler)
+// NotFoundHandler(handler http.Handler)
+// 这些操作都会 更新 PathRecorderMux 的配置状态（比如 pathToHandler），但是这些状态本身 还不会直接影响真实的请求分发。
 func (m *PathRecorderMux) refreshMuxLocked() {
 	newMux := &pathHandler{
 		muxName:         m.name,

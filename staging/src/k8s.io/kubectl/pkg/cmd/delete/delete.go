@@ -143,9 +143,23 @@ type DeleteOptions struct {
 	WarningPrinter *printers.WarningPrinter
 }
 
+// 示例
+// 删除 pod
+// kubectl delete pod nginx
+// 删除所有 pod
+// kubectl delete pod --all
+// 使用 label 选择器删除
+// kubectl delete pod -l app=myapp
+// 删除 YAML 文件定义的资源
+// kubectl delete -f my-deployment.yaml
 func NewCmdDelete(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	deleteFlags := NewDeleteCommandFlags("containing the resource to delete.")
-
+	//-f：从文件中删除资源
+	//
+	//-k：从 Kustomization 目录中删除资源
+	//
+	//--all：删除所有匹配的资源
+	//-l：使用 label 选择器删除资源
 	cmd := &cobra.Command{
 		Use:                   "delete ([-f FILENAME] | [-k DIRECTORY] | TYPE [(NAME | -l label | --all)])",
 		DisableFlagsInUseLine: true,
@@ -319,6 +333,7 @@ func (o *DeleteOptions) Validate() error {
 
 func (o *DeleteOptions) RunDelete(f cmdutil.Factory) error {
 	if len(o.Raw) > 0 {
+		//o.Raw：如果 o.Raw 选项不为空，则执行 原始 HTTP 请求删除，适用于 kubectl delete --raw
 		restClient, err := f.RESTClient()
 		if err != nil {
 			return err
@@ -328,12 +343,23 @@ func (o *DeleteOptions) RunDelete(f cmdutil.Factory) error {
 		}
 		return rawhttp.RawDelete(restClient, o.IOStreams, o.Raw, o.Filenames[0])
 	}
-
+	//o.Interactive：如果启用了交互式模式（--interactive），则：
+	//
+	//创建 previewInfos：存储要删除的资源信息。
+	//
+	//忽略 NotFound 错误（如果 o.IgnoreNotFound 为 true）。
 	if o.Interactive {
 		previewInfos := []*resource.Info{}
 		if o.IgnoreNotFound {
 			o.PreviewResult = o.PreviewResult.IgnoreErrors(errors.IsNotFound)
 		}
+		//遍历 o.PreviewResult（即将删除的资源列表）：
+		//
+		//遇到错误直接返回。
+		//
+		//将资源信息添加到 previewInfos 列表中。
+		//
+		//记录资源信息到 o.previewResourceMap，用于后续确认。
 		err := o.PreviewResult.Visit(func(info *resource.Info, err error) error {
 			if err != nil {
 				return err
@@ -350,11 +376,17 @@ func (o *DeleteOptions) RunDelete(f cmdutil.Factory) error {
 		if err != nil {
 			return err
 		}
+		//如果没有资源可删除，直接返回 "No resources found"。
 		if len(previewInfos) == 0 {
 			fmt.Fprintf(o.Out, "No resources found\n")
 			return nil
 		}
 
+		//调用 o.confirmation(previewInfos) 获取用户确认：
+		//
+		//用户确认：继续删除。
+		//
+		//用户取消：打印 "deletion is cancelled"，然后退出。
 		if !o.confirmation(previewInfos) {
 			fmt.Fprintf(o.Out, "deletion is cancelled\n")
 			return nil
@@ -365,6 +397,15 @@ func (o *DeleteOptions) RunDelete(f cmdutil.Factory) error {
 }
 
 func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
+	//found：记录成功找到的资源数量。
+	//
+	//o.IgnoreNotFound：如果启用了 忽略不存在资源，那么 r.IgnoreErrors(errors.IsNotFound) 过滤掉 NotFound 错误。
+	//
+	//warnClusterScope：如果删除的是 集群级别资源，则打印警告。
+	//
+	//deletedInfos：存储删除的资源信息。
+	//
+	//uidMap：用于记录 资源的 UID，以便后续 等待删除完成。
 	found := 0
 	if o.IgnoreNotFound {
 		r = r.IgnoreErrors(errors.IsNotFound)
@@ -376,7 +417,7 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 		if err != nil {
 			return err
 		}
-
+		// 交互模式下，只删除用户确认的资源
 		if o.Interactive {
 			if _, ok := o.previewResourceMap[cmdwait.ResourceLocation{
 				GroupResource: info.Mapping.Resource.GroupResource(),
@@ -392,26 +433,41 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 		found++
 
 		options := &metav1.DeleteOptions{}
+		//如果 o.GracePeriod >= 0，设置 GracePeriodSeconds（优雅退出时间）。
+		//
+		//设置 PropagationPolicy：
+		//
+		//Foreground：先删除子资源，再删除父资源（默认）。
+		//
+		//Background：直接删除父资源，由 API 负责级联删除子资源。
 		if o.GracePeriod >= 0 {
 			options = metav1.NewDeleteOptions(int64(o.GracePeriod))
 		}
 		options.PropagationPolicy = &o.CascadingStrategy
-
+		//如果 删除的是集群范围的资源（如 ClusterRole、Namespace），则打印警告。
 		if warnClusterScope && info.Mapping.Scope.Name() == meta.RESTScopeNameRoot {
 			o.WarningPrinter.Print("deleting cluster-scoped resources, not scoped to the provided namespace")
 			warnClusterScope = false
 		}
-
+		//如果是 Dry-Run 模式（仅模拟执行删除，不真正删除），打印资源信息后直接返回。
 		if o.DryRunStrategy == cmdutil.DryRunClient {
 			if !o.Quiet {
 				o.PrintObj(info)
 			}
 			return nil
 		}
+		//o.deleteResource(info, options) 通过 API 调用 真正删除资源。
 		response, err := o.deleteResource(info, options)
 		if err != nil {
 			return err
 		}
+		//获取删除后资源的 UID：
+		//
+		//如果 response 是 metav1.Status，则从 status.Details.UID 读取 UID。
+		//
+		//如果 response 是其他对象，则使用 meta.Accessor(response).GetUID() 获取 UID。
+		//
+		//这些 UID 存入 uidMap，以便 等待删除完成。
 		resourceLocation := cmdwait.ResourceLocation{
 			GroupResource: info.Mapping.Resource.GroupResource(),
 			Namespace:     info.Namespace,
@@ -434,15 +490,18 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 	if err != nil {
 		return err
 	}
+	//如果没有找到要删除的资源，输出提示并返回。
 	if found == 0 {
 		fmt.Fprintf(o.Out, "No resources found\n")
 		return nil
 	}
+	//如果未启用等待 (--wait=false)，直接返回。
 	if !o.WaitForDeletion {
 		return nil
 	}
 	// if we don't have a dynamic client, we don't want to wait.  Eventually when delete is cleaned up, this will likely
 	// drop out.
+	//如果 DynamicClient 为空，表示不支持等待删除，直接返回。
 	if o.DynamicClient == nil {
 		return nil
 	}
@@ -451,12 +510,23 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 	if o.DryRunStrategy != cmdutil.DryRunNone {
 		return nil
 	}
-
+	//o.Timeout == 0 表示无限等待，设定默认超时 168 小时（1 周）。
 	effectiveTimeout := o.Timeout
 	if effectiveTimeout == 0 {
 		// if we requested to wait forever, set it to a week.
 		effectiveTimeout = 168 * time.Hour
 	}
+	//cmdwait.WaitOptions 负责 轮询检查资源是否被删除：
+	//
+	//ResourceFinder：资源查找器，用于遍历 deletedInfos。
+	//
+	//UIDMap：记录资源 UID。
+	//
+	//DynamicClient：用于检查资源是否仍然存在。
+	//
+	//Timeout：等待超时时间。
+	//
+	//ConditionFn：等待资源被删除的条件。
 	waitOptions := cmdwait.WaitOptions{
 		ResourceFinder: genericclioptions.ResourceFinderForResult(resource.InfoListVisitor(deletedInfos)),
 		UIDMap:         uidMap,
@@ -467,6 +537,7 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 		ConditionFn: cmdwait.IsDeleted,
 		IOStreams:   o.IOStreams,
 	}
+	// 等待资源删除成功
 	err = waitOptions.RunWait()
 	if errors.IsForbidden(err) || errors.IsMethodNotSupported(err) {
 		// if we're forbidden from waiting, we shouldn't fail.

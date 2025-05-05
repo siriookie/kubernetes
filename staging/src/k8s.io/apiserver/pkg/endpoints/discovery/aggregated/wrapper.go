@@ -74,8 +74,14 @@ func (wrapped *WrappedHandler) GenerateWebService(prefix string, returnType inte
 // application/json;v=v2;g=apidiscovery.k8s.io;as=APIGroupDiscoveryList)
 func WrapAggregatedDiscoveryToHandler(handler http.Handler, aggHandler http.Handler) *WrappedHandler {
 	scheme := runtime.NewScheme()
+	// 注册 discovery v2 和 v2beta1 版本的 API 类型
 	utilruntime.Must(apidiscoveryv2.AddToScheme(scheme))
 	utilruntime.Must(apidiscoveryv2beta1.AddToScheme(scheme))
+
+	// 为这些类型创建 codec 工厂（负责内容协商）
 	codecs := serializer.NewCodecFactory(scheme)
+
+	// 返回一个 WrappedHandler：根据请求 Accept 头来判断使用哪个 handler
 	return &WrappedHandler{codecs, handler, aggHandler}
+
 }

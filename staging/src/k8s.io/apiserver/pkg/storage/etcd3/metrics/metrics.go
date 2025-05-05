@@ -35,6 +35,28 @@ import (
  * involves explicitly acknowledging support for the metric across multiple releases, in accordance with
  * the metric stability policy.
  */
+//📊 一类：etcd 请求性能指标
+//指标名	类型	作用
+//etcdRequestLatency	HistogramVec	记录不同操作类型的 etcd 请求延迟（单位：秒），用于分析慢请求。标签如 operation=GET/PUT/LIST/...
+//etcdRequestCounts	CounterVec	记录发往 etcd 的请求总次数，按操作类型分类
+//etcdRequestErrorCounts	CounterVec	记录 etcd 请求失败次数，用于观察是否出现连接超时、权限失败等问题
+//etcdEventsReceivedCounts	CounterVec	记录 kube-apiserver 从 etcd 收到的事件数量，按资源类型等标签分类
+//etcdBookmarkCounts	CounterVec	记录 bookmark 事件的数量，bookmark 是 watch 机制的一个优化类型
+//etcdLeaseObjectCounts	GaugeVec	记录 etcd 中持有 lease 的对象数量（如 TTL 资源）
+//
+//🧱 二类：对象/资源数指标
+//指标名	类型	作用
+//objectCounts	GaugeVec	记录 etcd 中各类 Kubernetes 对象的数量，如 pod、node、deployment 等。常用于容量评估。
+//dbTotalSize	Gauge	记录 etcd 数据库当前总大小（单位：字节），用于观察 etcd 存储压力
+//storageMonitor	Custom Collector	自定义 collector，汇总更复杂的 etcd 存储指标，如碎片率、版本信息等（通常在 etcd.go 里实现）
+//
+//📦 三类：LIST 查询监控（慢查询分析）
+//指标名	类型	作用
+//listStorageCount	CounterVec	记录 LIST 操作的总次数
+//listStorageNumFetched	CounterVec	记录从 etcd 中实际取出的对象总数（可能被后续过滤）
+//listStorageNumSelectorEvals	CounterVec	记录 list 查询时 selector 的过滤执行次数（筛选数量）
+//listStorageNumReturned	CounterVec	记录最终返回给客户端的对象数量
+//decodeErrorCounts	CounterVec	记录从 etcd 解码对象失败的次数（如数据损坏、版本不兼容）
 var (
 	etcdRequestLatency = compbasemetrics.NewHistogramVec(
 		&compbasemetrics.HistogramOpts{

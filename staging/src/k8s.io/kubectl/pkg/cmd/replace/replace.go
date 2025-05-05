@@ -108,6 +108,12 @@ func NewReplaceOptions(streams genericiooptions.IOStreams) *ReplaceOptions {
 	}
 }
 
+// 特性	kubectl replace	kubectl apply
+// 更新方式	完全替换资源	部分更新，只更新变化的部分
+// 冲突处理	失败，要求资源状态完全一致	自动合并变更，处理冲突
+// 适用场景	用于全新替换资源	用于频繁更新和保持资源状态一致的场景
+// 资源版本管理	不进行版本控制，只替换资源	使用版本控制，保持资源的历史状态
+// 控制器管理资源	会导致资源重新创建（如 Deployment）	适合控制器管理的资源，避免不必要的重新创建
 func NewCmdReplace(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewReplaceOptions(streams)
 

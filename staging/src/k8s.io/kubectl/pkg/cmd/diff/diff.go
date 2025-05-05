@@ -131,6 +131,12 @@ func NewDiffOptions(ioStreams genericiooptions.IOStreams) *DiffOptions {
 	}
 }
 
+// 对比 live 资源和本地文件
+// kubectl diff -f deployment.yaml
+// 🔹 如果 deployment.yaml 和集群里的 Deployment 不同，会输出：
+// - replicas: 3
+// + replicas: 5
+// （表示本地配置 replicas: 5，但 live 版本是 3）
 func NewCmdDiff(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	options := NewDiffOptions(streams)
 	cmd := &cobra.Command{
@@ -579,6 +585,9 @@ func (d *Differ) Diff(obj Object, printer Printer, showManagedFields bool) error
 	}
 
 	// Mask secret values if object is V1Secret
+	//判断 to 资源是否是 v1.Secret
+	//如果是 Secret，调用 NewMasker(from, to) 进行敏感字段脱敏
+	//例如，Secret 里的 data 字段可能是 Base64 编码的密码，diff 过程中应该脱敏
 	if gvk := to.GetObjectKind().GroupVersionKind(); gvk.Version == "v1" && gvk.Kind == "Secret" {
 		m, err := NewMasker(from, to)
 		if err != nil {
@@ -694,7 +703,7 @@ func (o *DiffOptions) Run() error {
 
 	r := o.Builder.
 		Unstructured().
-		VisitorConcurrency(o.Concurrency).
+		VisitorConcurrency(o.Concurrency). //并行解析 YAML，提升 diff 速度
 		NamespaceParam(o.CmdNamespace).DefaultNamespace().
 		FilenameParam(o.EnforceNamespace, &o.FilenameOptions).
 		LabelSelectorParam(o.Selector).
@@ -777,7 +786,7 @@ func (o *DiffOptions) Run() error {
 	if err != nil {
 		return err
 	}
-
+	// 调用系统提供的diff -u来diff文件
 	return differ.Run(o.Diff)
 }
 

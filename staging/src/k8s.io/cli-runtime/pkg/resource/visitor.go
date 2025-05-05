@@ -116,6 +116,7 @@ func (i *Info) Get() (err error) {
 // Refresh updates the object with another object. If ignoreError is set
 // the Object will be updated even if name, namespace, or resourceVersion
 // attributes cannot be loaded from the object.
+// Refresh(obj, true) 更新本地缓存，确保最新的资源状态。
 func (i *Info) Refresh(obj runtime.Object, ignoreError bool) error {
 	name, err := metadataAccessor.Name(obj)
 	if err != nil {
@@ -662,6 +663,7 @@ func SetNamespace(namespace string) VisitorFunc {
 // Info object, or if the namespace is set and does not match the provided
 // value, returns an error. This is intended to guard against administrators
 // accidentally operating on resources outside their namespace.
+// RequireNamespace 这个函数的作用是确保 Kubernetes 资源的 namespace 正确，防止管理员误操作其他 namespace 下的资源。
 func RequireNamespace(namespace string) VisitorFunc {
 	return func(info *Info, err error) error {
 		if err != nil {
@@ -671,11 +673,18 @@ func RequireNamespace(namespace string) VisitorFunc {
 			return nil
 		}
 		if len(info.Namespace) == 0 {
+			//如果 info.Namespace 为空（即 YAML/JSON 里没写 namespace）：
+			//直接用 namespace 参数填充它（即 kubectl --namespace=<namespace> 指定的）。
+			//UpdateObjectNamespace(info, nil) 更新 info 的 namespace。
+			//返回 nil，说明 namespace 设置成功。
 			info.Namespace = namespace
 			UpdateObjectNamespace(info, nil)
 			return nil
 		}
 		if info.Namespace != namespace {
+			//如果 info.Namespace 和 namespace 参数不匹配，说明：
+			//用户当前 kubectl 命令的 --namespace 和资源本身的 namespace 不一致。
+			//报错提醒用户，必须显式指定 --namespace 以确认操作。
 			return fmt.Errorf("the namespace from the provided object %q does not match the namespace %q. You must pass '--namespace=%s' to perform this operation.", info.Namespace, namespace, info.Namespace)
 		}
 		return nil

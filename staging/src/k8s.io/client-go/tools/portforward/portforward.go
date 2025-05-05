@@ -206,7 +206,7 @@ func (pf *PortForwarder) ForwardPorts() error {
 	if protocol != PortForwardProtocolV1Name {
 		return fmt.Errorf("unable to negotiate protocol: client supports %q, server returned %q", PortForwardProtocolV1Name, protocol)
 	}
-
+	//执行实际的端口转发操作
 	return pf.forward()
 }
 

@@ -142,6 +142,7 @@ func (o *RestartOptions) Validate() error {
 }
 
 // RunRestart performs the execution of 'rollout restart' sub command
+// kubectl rollout restart 用于重启 Deployment、DaemonSet 或 StatefulSet，而不需要手动更改 Pod 的 spec。
 func (o RestartOptions) RunRestart() error {
 	r := o.Builder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).

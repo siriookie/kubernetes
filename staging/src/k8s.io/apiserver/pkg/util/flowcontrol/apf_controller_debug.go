@@ -47,6 +47,8 @@ func (cfgCtlr *configController) Install(c *mux.PathRecorderMux) {
 	c.UnlistedHandleFunc("/debug/api_priority_and_fairness/dump_requests", cfgCtlr.dumpRequests)
 }
 
+// 输出每个 PriorityLevelConfiguration 的内部状态，例如：
+// 名称、配置值（如限制的并发度）、当前并发使用情况等。
 func (cfgCtlr *configController) dumpPriorityLevels(w http.ResponseWriter, r *http.Request) {
 	cfgCtlr.lock.Lock()
 	defer cfgCtlr.lock.Unlock()
@@ -101,6 +103,9 @@ func (cfgCtlr *configController) dumpPriorityLevels(w http.ResponseWriter, r *ht
 	runtime.HandleError(tabWriter.Flush())
 }
 
+// 输出每个优先级等级下的 QueueSet 状态（即请求队列的情况），如：
+// 每个 FlowSchema 对应的队列数
+// 队列中的请求数量、排队时间等。
 func (cfgCtlr *configController) dumpQueues(w http.ResponseWriter, r *http.Request) {
 	cfgCtlr.lock.Lock()
 	defer cfgCtlr.lock.Unlock()
@@ -138,6 +143,9 @@ func (cfgCtlr *configController) dumpQueues(w http.ResponseWriter, r *http.Reque
 	runtime.HandleError(tabWriter.Flush())
 }
 
+// 输出当前正在处理和排队的所有请求信息：
+// 来自哪个 FlowSchema / PriorityLevel
+// 请求 ID、排队时间、执行时间等。
 func (cfgCtlr *configController) dumpRequests(w http.ResponseWriter, r *http.Request) {
 	cfgCtlr.lock.Lock()
 	defer cfgCtlr.lock.Unlock()

@@ -283,6 +283,7 @@ type ObjectTyper interface {
 	// ObjectKinds returns the all possible group,version,kind of the provided object, true if
 	// the object is unversioned, or an error if the object is not recognized
 	// (IsNotRegisteredError will return true).
+	//例如 PodList 的 GVK 可能是 {Group: "", Version: "v1", Kind: "PodList"}。
 	ObjectKinds(Object) ([]schema.GroupVersionKind, bool, error)
 	// Recognizes returns true if the scheme is able to handle the provided version and kind,
 	// or more precisely that the provided version is a possible conversion or decoding

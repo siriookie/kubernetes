@@ -160,11 +160,12 @@ func (h *DeploymentHistoryViewer) ViewHistory(namespace, name string, revision i
 
 // GetHistory returns the ReplicaSet revisions associated with a Deployment
 func (h *DeploymentHistoryViewer) GetHistory(namespace, name string) (map[int64]runtime.Object, error) {
+	//getDeploymentReplicaSets(...)：调用 Kubernetes API，获取该 Deployment 当前及历史所有的 ReplicaSet。
 	allRSs, err := getDeploymentReplicaSets(h.c.AppsV1(), namespace, name)
 	if err != nil {
 		return nil, err
 	}
-
+	//遍历所有 ReplicaSets，获取 revision 版本号
 	result := make(map[int64]runtime.Object)
 	for _, rs := range allRSs {
 		v, err := deploymentutil.Revision(rs)

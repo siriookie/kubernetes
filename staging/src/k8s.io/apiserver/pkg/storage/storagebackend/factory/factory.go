@@ -30,6 +30,18 @@ import (
 type DestroyFunc func()
 
 // Create creates a storage backend based on given config.
+// etcd2 和 etcd3 是 etcd 系列的两个主要版本，它们在 Kubernetes 存储中的使用方式有较大的差异，
+// 尤其体现在数据模型、性能、功能支持上。Kubernetes 从 1.13 起移除对 etcd2 的支持，全面切换到 etcd3。
+// ✅ 主要区别一览：
+// 特性	etcd2	etcd3
+// 数据模型	基于平面 key-value	支持事务的 MVCC（多版本并发控制）
+// Watch 机制	非增量，容易丢事件	增量 Watch，稳定可靠
+// 事务支持	不支持原子事务	支持事务（Txn）操作
+// 性能与效率	单一版本，效率低	高性能，支持并发读写
+// 存储结构	BoltDB，单版本	BoltDB + MVCC，多版本
+// Compaction	简单删除旧 key	支持版本压缩、历史清理
+// Snapshot / Backup 支持	基础	完善，支持增量快照
+// Kubernetes 支持情况	已废弃	官方推荐，默认使用
 func Create(c storagebackend.ConfigForResource, newFunc, newListFunc func() runtime.Object, resourcePrefix string) (storage.Interface, DestroyFunc, error) {
 	switch c.Type {
 	case storagebackend.StorageTypeETCD2:

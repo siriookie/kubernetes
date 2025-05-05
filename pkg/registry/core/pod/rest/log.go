@@ -78,6 +78,8 @@ func (r *LogREST) ProducesObject(verb string) interface{} {
 }
 
 // Get retrieves a runtime.Object that will stream the contents of the pod log
+// pod/log 是目前唯一的标准实现 GetterWithOptions 的子资源。
+// 这是因为它需要支持一系列复杂的 query 参数，这些参数不是 GetOptions 能满足的。
 func (r *LogREST) Get(ctx context.Context, name string, opts runtime.Object) (runtime.Object, error) {
 	// register the metrics if the context is used.  This assumes sync.Once is fast.  If it's not, it could be an init block.
 	registerMetrics()

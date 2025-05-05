@@ -220,6 +220,58 @@ func (i *storeIndex) deleteKeyFromIndex(key, indexValue string, index Index) {
 	}
 }
 
+// threadSafeMap 中，没有使用 Go 的 sync.Map 而是采用 map + RWMutex 的设计，主要有以下几个原因：
+//
+// 1. sync.Map 的适用场景
+// Go 的 sync.Map 是为特定场景优化的并发安全 Map，适用于：
+//
+// 读多写少（绝大多数操作是读取，写入很少）。
+//
+// Key 稳定性高（Key 一旦写入后很少删除或更新）。
+//
+// 不需要范围查询（sync.Map 不支持按范围遍历）。
+//
+// 但 Kubernetes 的 threadSafeMap 的使用场景不同：
+//
+// 频繁写入：Watch 机制会持续接收事件并更新缓存。
+//
+// 动态 Key：Pod、Service 等资源会频繁创建、删除、更新。
+//
+// 需要索引和范围查询：Kubernetes 需要支持 List、Watch 等范围操作。
+//
+// 2. map + RWMutex 的优势
+// (1) 更可控的锁粒度
+// threadSafeMap 使用 sync.RWMutex，可以精细控制 读锁（RLock）和写锁（Lock）。
+//
+// 而 sync.Map 内部使用更复杂的无锁+锁混合机制，在频繁写入时性能可能下降。
+//
+// (2) 支持索引和范围查询
+// threadSafeMap 需要维护额外的索引（如 namespace、labels），而 sync.Map 无法直接支持这种复杂查询。
+//
+// 例如：
+//
+// go
+// // 按 namespace 查询 Pod
+// pods, err := store.ByIndex("namespace", "default")
+// 这种操作在 sync.Map 上难以高效实现。
+//
+// (3) 内存效率更高
+// sync.Map 为了实现无锁读取，内部使用了 冗余存储（如 read 和 dirty 两个 Map），内存占用更高。
+//
+// map + RWMutex 更节省内存，适合 Kubernetes 缓存大量资源的场景。
+//
+// (4) 更低的 GC 压力
+// sync.Map 内部使用 atomic.Value 和接口类型，可能增加 Go GC 的负担。
+//
+// map + RWMutex 直接存储具体类型，GC 更高效。
+//
+// 3. sync.Map 的性能对比
+// 场景	map + RWMutex	sync.Map
+// 读多写少	一般（需加读锁）	⭐️ 最优（无锁读）
+// 写多读少	⭐️ 较好（可控锁）	较差（锁竞争+冗余拷贝）
+// 频繁更新/删除	⭐️ 较好	较差（需要清理 dirty Map）
+// 范围查询	⭐️ 支持	不支持
+// 内存占用	⭐️ 较低	较高（维护两份数据）
 // threadSafeMap implements ThreadSafeStore
 type threadSafeMap struct {
 	lock  sync.RWMutex

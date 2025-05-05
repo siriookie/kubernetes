@@ -23,7 +23,21 @@ import (
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
 
+// 检查当前用户是否可以创建 Pod
+// kubectl auth can-i create pods
+// ✅ 输出：
+// yes
+// 说明当前用户有创建 Pod 的权限。
+// ❌ 如果没有权限：
+// no
+
+// kubectl auth whoami
+// 表示当前身份是 default 命名空间中的 my-sa ServiceAccount。
+// 如果当前用户是 admin，可能返回：
+// admin
 // NewCmdAuth returns an initialized Command instance for 'auth' sub command
+//
+//system:serviceaccount:default:my-sa
 func NewCmdAuth(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	// Parent command to which all subcommands are added.
 	cmds := &cobra.Command{
@@ -33,9 +47,9 @@ func NewCmdAuth(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Co
 		Run:   cmdutil.DefaultSubCommandRun(streams.ErrOut),
 	}
 
-	cmds.AddCommand(NewCmdCanI(f, streams))
-	cmds.AddCommand(NewCmdReconcile(f, streams))
-	cmds.AddCommand(NewCmdWhoAmI(f, streams))
+	cmds.AddCommand(NewCmdCanI(f, streams))      //检查当前用户是否可以执行某个操作
+	cmds.AddCommand(NewCmdReconcile(f, streams)) //将权限对象（如 Role, RoleBinding）与集群状态同步
+	cmds.AddCommand(NewCmdWhoAmI(f, streams))    //显示当前身份信息（如用户、组、服务账户）
 
 	return cmds
 }

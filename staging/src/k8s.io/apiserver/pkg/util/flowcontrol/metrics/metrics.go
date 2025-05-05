@@ -87,6 +87,67 @@ func (rs Registerables) Append(more ...compbasemetrics.Registerable) Registerabl
 	return append(rs, more...)
 }
 
+// 🧵 一类：请求数量类指标
+// 指标名	说明
+// apiserverRejectedRequestsTotal	被拒绝的请求总数（排队时间过长或无资源）
+// apiserverDispatchedRequestsTotal	成功被调度执行的请求总数
+// apiserverCurrentR	当前估计的全局 R 值（请求速率估计值）
+// apiserverDispatchR	当前调度中的 R 值（调度速率）
+// apiserverLatestS	当前 S 值（执行速率）
+// apiserverNextSBounds	下一周期的 S 上/下限估计值
+// apiserverNextDiscountedSBounds	S 上下限的折扣版本（稳定控制用）
+//
+// 🎫 二类：排队与并发资源指标
+// 指标名	说明
+// apiserverCurrentInqueueRequests	当前排队中的请求数量
+// apiserverCurrentInqueueSeats	当前排队中所需的座位数（资源量）
+// apiserverRequestQueueLength	每个优先级队列的长度
+// apiserverRequestConcurrencyLimit	每个优先级的并发请求上限
+// apiserverRequestConcurrencyInUse	当前每个优先级使用的并发量（seats）
+// apiserverCurrentExecutingSeats	正在执行中的 seat 总量
+// apiserverCurrentExecutingRequests	正在执行的请求总数
+//
+// ⏱️ 三类：耗时指标
+// 指标名	说明
+// apiserverRequestWaitingSeconds	请求在队列中等待的时间直方图
+// apiserverRequestExecutionSeconds	请求实际执行所耗费的时间直方图
+//
+// 🔁 四类：watch 请求与并发演化
+// 指标名	说明
+// watchCountSamples	当前 active watch 请求的采样值
+// apiserverEpochAdvances	调度 epoch（周期）推进的次数
+//
+// ⚖️ 五类：调度器对 seat（资源）估算值
+// 这些是为优化调度而引入的 seat 需求统计指标，用于理解不同优先级的请求资源使用情况。
+//
+// 指标名	说明
+// apiserverWorkEstimatedSeats	估算的每个请求需要多少 seat（资源）
+// apiserverDispatchWithNoAccommodation	有些请求调度失败（因为 seat 不足）
+// apiserverNominalConcurrencyLimits	当前每个优先级分配的名义并发限制
+// apiserverMinimumConcurrencyLimits	并发下限
+// apiserverMaximumConcurrencyLimits	并发上限
+// apiserverSeatDemandHighWatermarks	seat 使用峰值
+// apiserverSeatDemandAverages	seat 使用平均值
+// apiserverSeatDemandStandardDeviations	seat 使用的标准差
+// apiserverSeatDemandSmootheds	平滑处理后的 seat 估值
+// apiserverSeatDemandTargets	系统尝试维持的目标 seat 使用值
+//
+// 🎯 六类：调度优先级分配情况
+// 指标名	说明
+// apiserverFairFracs	每个 flow-schema 获得的公平分配比例（fair fraction）
+// apiserverCurrentConcurrencyLimits	实际执行中的并发限制值
+//
+// 🔢 最后三类 .metrics()：
+// 这些是返回多个指标的容器，内部包括每个优先级级别的指标细分：
+//
+// go
+// 复制
+// 编辑
+// PriorityLevelExecutionSeatsGaugeVec.metrics()
+// PriorityLevelConcurrencyGaugeVec.metrics()
+// readWriteConcurrencyGaugeVec.metrics()
+// ApiserverSeatDemands.metrics()
+// 这些返回的是具体的 GaugeVec/HistogramVec，可能按 flow schema、priority level、request type（read/write）等细分维度记录 seat 使用与调度情况。
 var (
 	apiserverRejectedRequestsTotal = compbasemetrics.NewCounterVec(
 		&compbasemetrics.CounterOpts{
@@ -455,7 +516,67 @@ var (
 		},
 		[]string{priorityLevel},
 	)
-
+	//🧵 一类：请求数量类指标
+	//指标名	说明
+	//apiserverRejectedRequestsTotal	被拒绝的请求总数（排队时间过长或无资源）
+	//apiserverDispatchedRequestsTotal	成功被调度执行的请求总数
+	//apiserverCurrentR	当前估计的全局 R 值（请求速率估计值）
+	//apiserverDispatchR	当前调度中的 R 值（调度速率）
+	//apiserverLatestS	当前 S 值（执行速率）
+	//apiserverNextSBounds	下一周期的 S 上/下限估计值
+	//apiserverNextDiscountedSBounds	S 上下限的折扣版本（稳定控制用）
+	//
+	//🎫 二类：排队与并发资源指标
+	//指标名	说明
+	//apiserverCurrentInqueueRequests	当前排队中的请求数量
+	//apiserverCurrentInqueueSeats	当前排队中所需的座位数（资源量）
+	//apiserverRequestQueueLength	每个优先级队列的长度
+	//apiserverRequestConcurrencyLimit	每个优先级的并发请求上限
+	//apiserverRequestConcurrencyInUse	当前每个优先级使用的并发量（seats）
+	//apiserverCurrentExecutingSeats	正在执行中的 seat 总量
+	//apiserverCurrentExecutingRequests	正在执行的请求总数
+	//
+	//⏱️ 三类：耗时指标
+	//指标名	说明
+	//apiserverRequestWaitingSeconds	请求在队列中等待的时间直方图
+	//apiserverRequestExecutionSeconds	请求实际执行所耗费的时间直方图
+	//
+	//🔁 四类：watch 请求与并发演化
+	//指标名	说明
+	//watchCountSamples	当前 active watch 请求的采样值
+	//apiserverEpochAdvances	调度 epoch（周期）推进的次数
+	//
+	//⚖️ 五类：调度器对 seat（资源）估算值
+	//这些是为优化调度而引入的 seat 需求统计指标，用于理解不同优先级的请求资源使用情况。
+	//
+	//指标名	说明
+	//apiserverWorkEstimatedSeats	估算的每个请求需要多少 seat（资源）
+	//apiserverDispatchWithNoAccommodation	有些请求调度失败（因为 seat 不足）
+	//apiserverNominalConcurrencyLimits	当前每个优先级分配的名义并发限制
+	//apiserverMinimumConcurrencyLimits	并发下限
+	//apiserverMaximumConcurrencyLimits	并发上限
+	//apiserverSeatDemandHighWatermarks	seat 使用峰值
+	//apiserverSeatDemandAverages	seat 使用平均值
+	//apiserverSeatDemandStandardDeviations	seat 使用的标准差
+	//apiserverSeatDemandSmootheds	平滑处理后的 seat 估值
+	//apiserverSeatDemandTargets	系统尝试维持的目标 seat 使用值
+	//
+	//🎯 六类：调度优先级分配情况
+	//指标名	说明
+	//apiserverFairFracs	每个 flow-schema 获得的公平分配比例（fair fraction）
+	//apiserverCurrentConcurrencyLimits	实际执行中的并发限制值
+	//
+	//🔢 最后三类 .metrics()：
+	//这些是返回多个指标的容器，内部包括每个优先级级别的指标细分：
+	//
+	//go
+	//复制
+	//编辑
+	//PriorityLevelExecutionSeatsGaugeVec.metrics()
+	//PriorityLevelConcurrencyGaugeVec.metrics()
+	//readWriteConcurrencyGaugeVec.metrics()
+	//ApiserverSeatDemands.metrics()
+	//这些返回的是具体的 GaugeVec/HistogramVec，可能按 flow schema、priority level、request type（read/write）等细分维度记录 seat 使用与调度情况。
 	metrics = Registerables{
 		apiserverRejectedRequestsTotal,
 		apiserverDispatchedRequestsTotal,

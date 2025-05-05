@@ -48,10 +48,10 @@ func (m MetricsWithReset) Install(c *mux.PathRecorderMux) {
 
 // register apiserver and etcd metrics
 func register() {
-	apimetrics.Register()
-	cachermetrics.Register()
-	etcd3metrics.Register()
-	flowcontrolmetrics.Register()
-	peerproxymetrics.Register()
-	handlersmetrics.Register()
+	apimetrics.Register()         // 	注册 apiserver 自身的核心指标（如请求延迟、请求量、请求错误数）
+	cachermetrics.Register()      // 注册 apiserver 内部 cache 相关指标（如 informer cache 命中率、缓存延迟）
+	etcd3metrics.Register()       // 注册与 etcd 通信相关的指标（如请求耗时、失败次数、重试次数）
+	flowcontrolmetrics.Register() // 注册 API 请求的流控（Priority and Fairness）相关指标
+	peerproxymetrics.Register()   // 注册 peer proxy（如多集群代理）相关指标
+	handlersmetrics.Register()    // 注册 HTTP handler 处理相关指标
 }

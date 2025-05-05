@@ -188,10 +188,12 @@ type APIAggregator struct {
 }
 
 // Complete fills in any fields not set that are required to have valid data. It's mutating the receiver.
+// 补全未填写的字段，以确保配置对象 Config 是合法并可以用来启动 server 的。
+// 最终返回一个封装后的 CompletedConfig 对象，表示“配置已完成”。
 func (cfg *Config) Complete() CompletedConfig {
 	c := completedConfig{
-		cfg.GenericConfig.Complete(),
-		&cfg.ExtraConfig,
+		cfg.GenericConfig.Complete(), // 补全通用的 apiserver 配置
+		&cfg.ExtraConfig,             // 聚合 apiserver 自己的额外配置
 	}
 
 	// the kube aggregator wires its own discovery mechanism
@@ -202,7 +204,10 @@ func (cfg *Config) Complete() CompletedConfig {
 }
 
 // NewWithDelegate returns a new instance of APIAggregator from the given config.
+// 构建并初始化一个 API 聚合服务器（APIAggregator），并将其与已有的 apiserver（如 kube-apiserver）进行委托整合。
 func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.DelegationTarget) (*APIAggregator, error) {
+	//创建 GenericAPIServer，作为聚合 API server 的主体。
+	//delegationTarget 表示被委托的下游 handler（一般是 kube-apiserver），也就是说这个 aggregator 会把不能处理的请求转发给它。
 	genericServer, err := c.GenericConfig.New("kube-aggregator", delegationTarget)
 	if err != nil {
 		return nil, err
@@ -212,6 +217,8 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 	if err != nil {
 		return nil, err
 	}
+	//用于监听 APIService 的变动。
+	//APIService 是 kube-aggregator 中最核心的资源，代表“某一个 GroupVersion 的 API 实现位置”。
 	informerFactory := informers.NewSharedInformerFactory(
 		apiregistrationClient,
 		5*time.Minute, // this is effectively used as a refresh interval right now.  Might want to do something nicer later on.
@@ -222,13 +229,18 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 	// Before it might have resulted in a 404 response which could have serious consequences for some controllers like  GC and NS
 	//
 	// Note that the APIServiceRegistrationController waits for APIServiceInformer to synced before doing its work.
+	//当所有 APIService 被 controller 安装完成时，关闭此信号，告诉 apiserver 现在可以正式对外暴露 /apis 接口。
+	//避免 controller 初始化不完整时，外部访问出现 404 错误。
 	apiServiceRegistrationControllerInitiated := make(chan struct{})
 	if err := genericServer.RegisterMuxAndDiscoveryCompleteSignal("APIServiceRegistrationControllerInitiated", apiServiceRegistrationControllerInitiated); err != nil {
 		return nil, err
 	}
-
+	//为后续代理流量选择一个合适的 Dial 函数（即底层网络连接的建立方式），设置给 proxyTransportDial。
 	var proxyTransportDial *transport.DialHolder
 	if c.GenericConfig.EgressSelector != nil {
+		//如果配置了 EgressSelector（用于不同网络环境下选择出站策略）
+		//查询出一个适用于 Cluster 类型流量的 Dialer
+		//封装成 transport.DialHolder 保存
 		egressDialer, err := c.GenericConfig.EgressSelector.Lookup(egressselector.Cluster.AsNetworkContext())
 		if err != nil {
 			return nil, err
@@ -237,12 +249,13 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 			proxyTransportDial = &transport.DialHolder{Dial: egressDialer}
 		}
 	} else if c.ExtraConfig.ProxyTransport != nil && c.ExtraConfig.ProxyTransport.DialContext != nil {
+		//如果没配置 EgressSelector，但手动传入了自定义的 http.RoundTripper（proxyTransport）并包含了 DialContext，就用这个。
 		proxyTransportDial = &transport.DialHolder{Dial: c.ExtraConfig.ProxyTransport.DialContext}
 	}
 
 	s := &APIAggregator{
-		GenericAPIServer:           genericServer,
-		delegateHandler:            delegationTarget.UnprotectedHandler(),
+		GenericAPIServer:           genericServer,                         //内嵌的通用 apiserver 实例，提供了基本的启动、注册 handler、认证/鉴权等功能。
+		delegateHandler:            delegationTarget.UnprotectedHandler(), //用于请求没有被 aggregator 接管的 API时，将请求委托给下游（通常是核心 apiserver）的处理器。 通常这表示 kube-aggregator 会先拦截 /apis 路径下的请求，其他的请求下放给主 apiserver。
 		proxyTransportDial:         proxyTransportDial,
 		proxyHandlers:              map[string]*proxyHandler{},
 		handledGroupVersions:       map[string]sets.Set[string]{},
@@ -257,6 +270,8 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 	}
 
 	// used later  to filter the served resource by those that have expired.
+	//创建一个资源过期评估器，用于判断哪些 API 资源应该被服务（serve）
+	//基于 API Server 的模拟版本（EmulationVersion）来决定哪些资源已过期
 	resourceExpirationEvaluator, err := genericapiserver.NewResourceExpirationEvaluator(s.GenericAPIServer.EffectiveVersion.EmulationVersion())
 	if err != nil {
 		return nil, err

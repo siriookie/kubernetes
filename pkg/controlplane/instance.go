@@ -246,6 +246,7 @@ func (c *Config) createEndpointReconciler() reconcilers.EndpointReconciler {
 }
 
 // Complete fills in any fields not set that are required to have valid data. It's mutating the receiver.
+// 将 *Config 中那些未填的、但运行 API Server 又必须有的字段进行填充默认值，最终返回 CompletedConfig，用于真正启动 APIServer。
 func (c *Config) Complete() CompletedConfig {
 	if c.ControlPlane.PeerEndpointReconcileInterval == 0 && c.EndpointReconcilerConfig.Interval != 0 {
 		// default this to the endpoint reconciler value before the generic

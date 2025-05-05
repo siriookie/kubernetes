@@ -112,7 +112,7 @@ type ClusterRoleGetter interface {
 }
 
 type ClusterRoleBindingLister interface {
-	ListClusterRoleBindings(ctx context.Context) ([]*rbacv1.ClusterRoleBinding, error)
+	ListClusterRoleBindings(ctx context.Context) ([]*rbacv1.ClusterRoleBinding, error) //在 informer 的本地缓存（cache.Indexer）中列出所有的 ClusterRoleBinding 资源。
 }
 
 func (r *DefaultRuleResolver) RulesFor(ctx context.Context, user user.Info, namespace string) ([]rbacv1.PolicyRule, error) {
@@ -176,7 +176,11 @@ func (d *roleBindingDescriber) String() string {
 	)
 }
 
+// 根据用户（user）和命名空间（namespace），查找出该用户有的所有权限规则（PolicyRule），并把每条规则传给 visitor() 函数处理。
 func (r *DefaultRuleResolver) VisitRulesFor(ctx context.Context, user user.Info, namespace string, visitor func(source fmt.Stringer, rule *rbacv1.PolicyRule, err error) bool) {
+	//类型	                  说明	           查哪个对象？
+	//ClusterRoleBinding	集群范围的权限	查 r.clusterRoleBindingLister.ListClusterRoleBindings(ctx)
+	//RoleBinding	命名空间下的权限	查 r.roleBindingLister.ListRoleBindings(ctx, namespace)
 	if clusterRoleBindings, err := r.clusterRoleBindingLister.ListClusterRoleBindings(ctx); err != nil {
 		if !visitor(nil, nil, err) {
 			return
@@ -188,6 +192,7 @@ func (r *DefaultRuleResolver) VisitRulesFor(ctx context.Context, user user.Info,
 			if !applies {
 				continue
 			}
+			// 上一步只拿到了clusterrolebinding 这一步要去拿role的rules
 			rules, err := r.GetRoleReferenceRules(ctx, clusterRoleBinding.RoleRef, "")
 			if err != nil {
 				if !visitor(nil, nil, err) {
@@ -198,6 +203,17 @@ func (r *DefaultRuleResolver) VisitRulesFor(ctx context.Context, user user.Info,
 			sourceDescriber.binding = clusterRoleBinding
 			sourceDescriber.subject = &clusterRoleBinding.Subjects[subjectIndex]
 			for i := range rules {
+				//func (v *authorizingVisitor) visit(source fmt.Stringer, rule *rbacv1.PolicyRule, err error) bool {
+				//	if rule != nil && RuleAllows(v.requestAttributes, rule) {
+				//		v.allowed = true
+				//		v.reason = fmt.Sprintf("RBAC: allowed by %s", source.String())
+				//		return false
+				//	}
+				//	if err != nil {
+				//		v.errors = append(v.errors, err)
+				//	}
+				//	return true
+				//}
 				if !visitor(sourceDescriber, &rules[i], nil) {
 					return
 				}
@@ -206,6 +222,7 @@ func (r *DefaultRuleResolver) VisitRulesFor(ctx context.Context, user user.Info,
 	}
 
 	if len(namespace) > 0 {
+		// 拿到命名空间级别的rolebinding
 		if roleBindings, err := r.roleBindingLister.ListRoleBindings(ctx, namespace); err != nil {
 			if !visitor(nil, nil, err) {
 				return
@@ -237,6 +254,7 @@ func (r *DefaultRuleResolver) VisitRulesFor(ctx context.Context, user user.Info,
 }
 
 // GetRoleReferenceRules attempts to resolve the RoleBinding or ClusterRoleBinding.
+// 获取某个 RoleBinding 或 ClusterRoleBinding 所引用的权限规则（PolicyRules）。
 func (r *DefaultRuleResolver) GetRoleReferenceRules(ctx context.Context, roleRef rbacv1.RoleRef, bindingNamespace string) ([]rbacv1.PolicyRule, error) {
 	switch roleRef.Kind {
 	case "Role":
@@ -260,6 +278,7 @@ func (r *DefaultRuleResolver) GetRoleReferenceRules(ctx context.Context, roleRef
 
 // appliesTo returns whether any of the bindingSubjects applies to the specified subject,
 // and if true, the index of the first subject that applies
+// 这个函数遍历一组 bindingSubjects（也就是 RoleBinding 里的 subjects），判断传进来的 user 是否匹配其中的任何一个 subject。
 func appliesTo(user user.Info, bindingSubjects []rbacv1.Subject, namespace string) (int, bool) {
 	for i, bindingSubject := range bindingSubjects {
 		if appliesToUser(user, bindingSubject, namespace) {
@@ -280,12 +299,18 @@ func has(set []string, ele string) bool {
 
 func appliesToUser(user user.Info, subject rbacv1.Subject, namespace string) bool {
 	switch subject.Kind {
+	//表示「这个 Subject 是一个特定用户」，匹配方式是用户名要一样。
 	case rbacv1.UserKind:
 		return user.GetName() == subject.Name
-
+	//表示「这个 Subject 是一个用户组」，用户的 Groups 中有这个 group 名就匹配。
 	case rbacv1.GroupKind:
 		return has(user.GetGroups(), subject.Name)
-
+	//这种是最常见的 Pod 使用的身份（system:serviceaccount:<namespace>:<name>）：
+	//逻辑是：
+	//先取出 service account 的 namespace：
+	//如果 subject.Namespace 不为空，就用它；
+	//否则用传进来的 namespace；
+	//然后调用 serviceaccount.MatchesUsername(...) 来判断：
 	case rbacv1.ServiceAccountKind:
 		// default the namespace to namespace we're working in if its available.  This allows rolebindings that reference
 		// SAs in th local namespace to avoid having to qualify them.

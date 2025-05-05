@@ -218,9 +218,9 @@ func (kr *kubeRegistry) MustRegister(cs ...Registerable) {
 	for _, c := range cs {
 		if c.Create(&kr.version) {
 			metrics = append(metrics, c)
-			kr.addResettable(c)
+			kr.addResettable(c) //	加入 resettable 列表（重置用）
 		} else {
-			kr.trackHiddenCollector(c)
+			kr.trackHiddenCollector(c) //	对于没有注册的指标做记录（可能被隐藏）
 		}
 	}
 	kr.PromRegistry.MustRegister(metrics...)

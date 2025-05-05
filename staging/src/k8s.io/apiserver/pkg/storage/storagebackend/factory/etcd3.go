@@ -289,6 +289,8 @@ var newETCD3Client = func(c storagebackend.TransportConfig) (*kubernetes.Client,
 		KeyFile:       c.KeyFile,
 		TrustedCAFile: c.TrustedCAFile,
 	}
+	//从 CertFile、KeyFile、CAFile 构建出 tls.Config。
+	//如果这些字段都为空，说明是非加密连接：
 	tlsConfig, err := tlsInfo.ClientConfig()
 	if err != nil {
 		return nil, err
@@ -298,6 +300,9 @@ var newETCD3Client = func(c storagebackend.TransportConfig) (*kubernetes.Client,
 	if len(c.CertFile) == 0 && len(c.KeyFile) == 0 && len(c.TrustedCAFile) == 0 {
 		tlsConfig = nil
 	}
+	//如果启用了 egress 网络策略（常用于多网络场景），会获取一个 DialFunc。
+	//
+	//后面 grpc 使用这个 dialer 代替默认的 TCP 拨号。
 	networkContext := egressselector.Etcd.AsNetworkContext()
 	var egressDialer utilnet.DialFunc
 	if c.EgressLookup != nil {
@@ -375,6 +380,16 @@ var (
 // startCompactorOnce start one compactor per transport. If the interval get smaller on repeated calls, the
 // compactor is replaced. A destroy func is returned. If all destroy funcs with the same transport are called,
 // the compactor is stopped.
+// 用于启动并管理 compactor 的复用逻辑。
+// 在 etcd 中，每次写入都会生成一个新的版本，历史版本不会立刻删除。为了避免 etcd 数据无限增长，需要定期执行 Compact 操作，清除旧的版本，节省存储空间，并提升性能。
+// Kubernetes 的 apiserver 会周期性地调用 etcd 的 compact 接口，这个任务就是由 "compactor" 执行的。
+// 这个函数实现了一个机制：
+//
+// 确保同一个 etcd TransportConfig 只启动一个 compactor 实例。
+//
+// 如果 interval 更小（压缩更频繁），则替换旧的 compactor。
+//
+// 返回一个 "销毁函数"，调用后减少引用计数，最后一个销毁者会真正关闭 compactor。
 func startCompactorOnce(c storagebackend.TransportConfig, interval time.Duration) (func(), error) {
 	compactorsMu.Lock()
 	defer compactorsMu.Unlock()
@@ -383,14 +398,17 @@ func startCompactorOnce(c storagebackend.TransportConfig, interval time.Duration
 		// short circuit, if the compaction request from apiserver is disabled
 		return func() {}, nil
 	}
+	//c 是 TransportConfig，包含 etcd server 地址、TLS 文件路径等。
 	key := fmt.Sprintf("%v", c) // gives: {[server1 server2] keyFile certFile caFile}
+	// 判断是否已存在 compactor，或 interval 更小（更频繁）
 	if compactor, foundBefore := compactors[key]; !foundBefore || compactor.interval > interval {
+		//如果没有旧的 compactor，或新 interval 更小（意味着要替换），就创建新的。
 		client, err := newETCD3Client(c)
 		if err != nil {
 			return nil, err
 		}
 		compactorClient := client.Client
-
+		//如果已存在旧 compactor，先取消它，并关闭 etcd 客户端。
 		if foundBefore {
 			// replace compactor
 			compactor.cancel()
@@ -409,7 +427,7 @@ func startCompactorOnce(c storagebackend.TransportConfig, interval time.Duration
 
 		etcd3.StartCompactor(ctx, compactorClient, interval)
 	}
-
+	//记录当前有多少个资源共享这个 compactor。
 	compactors[key].refs++
 
 	return func() {
@@ -472,31 +490,49 @@ func newETCD3Storage(c storagebackend.ConfigForResource, newFunc, newListFunc fu
 // corresponding metric etcd_db_total_size_in_bytes for each etcd server endpoint.
 // Deprecated: Will be replaced with newETCD3ProberMonitor
 func startDBSizeMonitorPerEndpoint(client *clientv3.Client, interval time.Duration) (func(), error) {
+	// 如果指定的时间间隔为0，则不进行监控，直接返回一个空的取消函数
 	if interval == 0 {
 		return func() {}, nil
 	}
+
+	// 加锁，确保对dbMetricsMonitors的并发访问安全
 	dbMetricsMonitorsMu.Lock()
+	// 函数结束时解锁
 	defer dbMetricsMonitorsMu.Unlock()
 
+	// 创建一个可取消的上下文
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// 遍历etcd客户端的所有端点
 	for _, ep := range client.Endpoints() {
+		// 检查该端点是否已经在监控列表中
 		if _, found := dbMetricsMonitors[ep]; found {
+			// 如果已经在监控列表中，则跳过该端点
 			continue
 		}
+		// 将该端点添加到监控列表中
 		dbMetricsMonitors[ep] = struct{}{}
+		// 复制端点地址，避免闭包问题
 		endpoint := ep
+		// 记录日志，表明开始监控该端点的数据库大小
 		klog.V(4).Infof("Start monitoring storage db size metric for endpoint %s with polling interval %v", endpoint, interval)
+
+		// 启动一个 goroutine 来定期监控该端点的数据库大小
 		go wait.JitterUntilWithContext(ctx, func(context.Context) {
+			// 获取该端点的状态信息
 			epStatus, err := client.Maintenance.Status(ctx, endpoint)
 			if err != nil {
+				// 如果获取状态信息失败，记录错误日志，并将指标更新为 -1
 				klog.V(4).Infof("Failed to get storage db size for ep %s: %v", endpoint, err)
 				metrics.UpdateEtcdDbSize(endpoint, -1)
 			} else {
+				// 如果获取状态信息成功，将指标更新为实际的数据库大小
 				metrics.UpdateEtcdDbSize(endpoint, epStatus.DbSize)
 			}
 		}, interval, dbMetricsMonitorJitter, true)
 	}
 
+	// 返回一个取消函数，用于停止所有的监控 goroutine
 	return func() {
 		cancel()
 	}, nil

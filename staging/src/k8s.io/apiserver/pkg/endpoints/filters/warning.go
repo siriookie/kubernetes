@@ -28,6 +28,15 @@ import (
 )
 
 // WithWarningRecorder attaches a deduplicating k8s.io/apiserver/pkg/warning#WarningRecorder to the request context.
+// 当某个资源字段已过时，业务逻辑中可能这样写：
+// rec := warning.WarningRecorderFrom(req.Context())
+//
+//	if rec != nil {
+//	   rec.AddWarning("my-source", "the field 'foo' is deprecated")
+//	}
+//
+// 然后 apiserver 会自动在响应头里加上：
+// Warning: 299 my-source "the field 'foo' is deprecated"
 func WithWarningRecorder(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		recorder := &recorder{writer: w}

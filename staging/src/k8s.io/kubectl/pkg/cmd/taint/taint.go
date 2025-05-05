@@ -96,6 +96,25 @@ var (
 		kubectl taint nodes foo bar:NoSchedule`))
 )
 
+//示例
+//1. 给某个节点添加 Taint
+//kubectl taint nodes node1 key1=value1:NoSchedule
+//node1: 目标节点
+//key1=value1:NoSchedule: Taint 的键值对，效果是 NoSchedule，即 不会调度新 Pod 到这个节点
+//2. 给多个节点添加 Taint
+//kubectl taint nodes node1 node2 key1=value1:PreferNoSchedule
+//这会对 node1 和 node2 应用 taint，但不会强制调度规则，PreferNoSchedule 只是一个软限制。
+//3. 移除 Taint
+//kubectl taint nodes node1 key1:NoSchedule-
+//- 代表移除 key1:NoSchedule 这个 taint。
+//
+//4. 允许覆盖已有 Taint
+//kubectl taint nodes node1 key1=value2:NoSchedule --overwrite
+//这里 key1 的值会被修改为 value2。
+//5. 对所有节点加 Taint
+
+// kubectl taint nodes --all key1=value1:NoSchedule
+// 这会给 集群内所有节点 添加 taint。
 func NewCmdTaint(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	options := &TaintOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("tainted").WithTypeSetter(scheme.Scheme),
@@ -260,6 +279,7 @@ func (o TaintOptions) Validate() error {
 }
 
 // RunTaint does the work
+// 执行 taint 操作，即 更新 Kubernetes 节点的 taints
 func (o TaintOptions) RunTaint() error {
 	r := o.builder.Do()
 	if err := r.Err(); err != nil {

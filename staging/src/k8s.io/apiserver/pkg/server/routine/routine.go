@@ -57,6 +57,7 @@ func TaskFrom(ctx context.Context) *Task {
 // WithRoutine returns an http.Handler that executes preparation of long running requests (i.e. watches)
 // in a separate Goroutine and then serves the long running request in the main Goroutine. Doing so allows
 // freeing stack memory used in preparation Goroutine for better memory efficiency.
+// WithRoutine 的作用是：将 handler 的执行转移到一个新的 goroutine，以减少栈内存使用。
 func WithRoutine(handler http.Handler, longRunning request.LongRunningRequestCheck) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()

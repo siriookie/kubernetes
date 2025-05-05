@@ -760,10 +760,16 @@ func (s preparedGenericAPIServer) NonBlockingRunWithContext(ctx context.Context,
 }
 
 // installAPIResources is a private method for installing the REST storage backing each api groupversionresource
+// 作用：为指定的 API 组（如 apps/v1）注册所有资源的 REST 存储后端。
+// 参数：
+// apiPrefix：API 路径前缀（如 /apis 或 /api）。
+// apiGroupInfo：包含 API 组版本和资源存储映射的信息。
+// typeConverter：用于字段类型转换（如 OpenAPI 模型转换）。
 func (s *GenericAPIServer) installAPIResources(apiPrefix string, apiGroupInfo *APIGroupInfo, typeConverter managedfields.TypeConverter) error {
 	var resourceInfos []*storageversion.ResourceInfo
 	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
 		if len(apiGroupInfo.VersionedResourcesStorageMap[groupVersion.Version]) == 0 {
+			//检查资源是否存在：如果某个版本（如 v1beta1）没有定义任何资源（VersionedResourcesStorageMap 为空），则跳过该版本并记录警告。
 			klog.Warningf("Skipping API %v because it has no resources.", groupVersion)
 			continue
 		}
@@ -775,7 +781,9 @@ func (s *GenericAPIServer) installAPIResources(apiPrefix string, apiGroupInfo *A
 		if apiGroupInfo.OptionsExternalVersion != nil {
 			apiGroupVersion.OptionsExternalVersion = apiGroupInfo.OptionsExternalVersion
 		}
+		//TypeConverter：用于字段管理（如 Server-Side Apply）。
 		apiGroupVersion.TypeConverter = typeConverter
+		//限制请求体大小（防止过大请求）。
 		apiGroupVersion.MaxRequestBodyBytes = s.maxRequestBodyBytes
 
 		discoveryAPIResources, r, err := apiGroupVersion.InstallREST(s.Handler.GoRestfulContainer)
@@ -858,21 +866,27 @@ func (s *GenericAPIServer) InstallLegacyAPIGroup(apiPrefix string, apiGroupInfo 
 // InstallAPIGroups exposes given api groups in the API.
 // The <apiGroupInfos> passed into this function shouldn't be used elsewhere as the
 // underlying storage will be destroyed on this servers shutdown.
+// 作用：将传入的 APIGroupInfo（API 组信息）注册到 GenericAPIServer，使其能够处理对应的 API 请求。
+// 参数：可变参数 apiGroupInfos，允许一次注册多个 API 组。
 func (s *GenericAPIServer) InstallAPIGroups(apiGroupInfos ...*APIGroupInfo) error {
 	for _, apiGroupInfo := range apiGroupInfos {
+		//确保 PrioritizedVersions 非空（即 API 组必须至少有一个版本）。
 		if len(apiGroupInfo.PrioritizedVersions) == 0 {
 			return fmt.Errorf("no version priority set for %#v", *apiGroupInfo)
 		}
 		// Do not register empty group or empty version.  Doing so claims /apis/ for the wrong entity to be returned.
 		// Catching these here places the error  much closer to its origin
+		//确保 Group（API 组名，如 apps、batch）非空。
 		if len(apiGroupInfo.PrioritizedVersions[0].Group) == 0 {
 			return fmt.Errorf("cannot register handler with an empty group for %#v", *apiGroupInfo)
 		}
+		//确保 Version（API 版本，如 v1、v1beta1）非空。
 		if len(apiGroupInfo.PrioritizedVersions[0].Version) == 0 {
 			return fmt.Errorf("cannot register handler with an empty version for %#v", *apiGroupInfo)
 		}
 	}
-
+	//作用：获取 API 组的 OpenAPI/Swagger 模型，用于生成 API 文档和客户端代码。
+	//如果失败：返回错误（例如，模型定义不合法）。
 	openAPIModels, err := s.getOpenAPIModels(APIGroupPrefix, apiGroupInfos...)
 	if err != nil {
 		return fmt.Errorf("unable to get openapi models: %v", err)

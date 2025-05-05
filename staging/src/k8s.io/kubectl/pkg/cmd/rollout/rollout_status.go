@@ -182,7 +182,11 @@ func (o *RolloutStatusOptions) Run() error {
 		if err != nil {
 			return err
 		}
-
+		//ListWatch：用于 监听 Deployment 或其他资源的状态变化。
+		//
+		//ListFunc：列出当前命名空间中 指定名称的资源。
+		//
+		//WatchFunc：监听该资源的变更（新增、修改、删除）。
 		fieldSelector := fields.OneTermEqualSelector("metadata.name", info.Name).String()
 		lw := &cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
@@ -196,6 +200,15 @@ func (o *RolloutStatusOptions) Run() error {
 		}
 
 		// if the rollout isn't done yet, keep watching deployment status
+		//watchtools.ContextWithOptionalTimeout()：创建一个支持超时的 context.Context 监听状态变化。
+		//
+		//interrupt.New(nil, cancel)：创建可中断监听的 interrupt 处理器。
+		//
+		//watchtools.UntilWithSync()：
+		//
+		//监听 Deployment 变化，直到状态变更为完成。
+		//
+		//每当有新的 watch.Event（新增、修改、删除）时，触发回调函数。
 		ctx, cancel := watchtools.ContextWithOptionalTimeout(context.Background(), o.Timeout)
 		intr := interrupt.New(nil, cancel)
 		return intr.Run(func() error {

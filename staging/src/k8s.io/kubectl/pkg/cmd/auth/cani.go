@@ -131,6 +131,7 @@ func NewCmdCanI(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Co
 				err = o.RunAccessList()
 			} else {
 				var allowed bool
+				// 去api server请求
 				allowed, err = o.RunAccessCheck()
 				if err == nil {
 					if !allowed {

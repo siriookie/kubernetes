@@ -184,20 +184,21 @@ var registerMetrics sync.Once
 func Register() {
 	// Register the metrics.
 	registerMetrics.Do(func() {
-		legacyregistry.MustRegister(listCacheCount)
-		legacyregistry.MustRegister(listCacheNumFetched)
-		legacyregistry.MustRegister(listCacheNumReturned)
-		legacyregistry.MustRegister(InitCounter)
-		legacyregistry.MustRegister(EventsReceivedCounter)
-		legacyregistry.MustRegister(EventsCounter)
-		legacyregistry.MustRegister(TerminatedWatchersCounter)
-		legacyregistry.MustRegister(watchCacheResourceVersion)
-		legacyregistry.MustRegister(watchCacheCapacityIncreaseTotal)
-		legacyregistry.MustRegister(watchCacheCapacityDecreaseTotal)
-		legacyregistry.MustRegister(WatchCacheCapacity)
-		legacyregistry.MustRegister(WatchCacheInitializations)
-		legacyregistry.MustRegister(WatchCacheReadWait)
-		legacyregistry.MustRegister(ConsistentReadTotal)
+		legacyregistry.MustRegister(listCacheCount)                  //List 缓存的条目数量
+		legacyregistry.MustRegister(listCacheNumFetched)             //List 缓存中从底层存储中获取的条数
+		legacyregistry.MustRegister(listCacheNumReturned)            //List 缓存返回给调用方的条数
+		legacyregistry.MustRegister(InitCounter)                     //	初始化的总次数（可能是 informer 初始化等）
+		legacyregistry.MustRegister(EventsReceivedCounter)           //	收到的事件总数（来自 apiserver 的）
+		legacyregistry.MustRegister(EventsCounter)                   //处理过的事件总数
+		legacyregistry.MustRegister(TerminatedWatchersCounter)       //被终止的 watch 数量
+		legacyregistry.MustRegister(watchCacheResourceVersion)       //当前 watchCache 的 resourceVersion 状态
+		legacyregistry.MustRegister(watchCacheCapacityIncreaseTotal) //watch 缓存容量扩大的次数
+		legacyregistry.MustRegister(watchCacheCapacityDecreaseTotal) //watch 缓存容量缩小的次数
+		legacyregistry.MustRegister(WatchCacheCapacity)              //当前 watch 缓存容量
+		legacyregistry.MustRegister(WatchCacheInitializations)       //watch 缓存初始化的次数
+		legacyregistry.MustRegister(WatchCacheReadWait)              //读取 watch 缓存时的等待次数/时长
+		legacyregistry.MustRegister(ConsistentReadTotal)             //一致性读取的次数（与非一致性读取对比）
+
 	})
 }
 

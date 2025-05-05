@@ -127,8 +127,32 @@ func (wm watchersMap) terminateAll(done func(*cacheWatcher)) {
 	}
 }
 
+// 这些 watcher 是在客户端（如 kubectl、controller、API consumer）发起 Watch 请求时添加的。过程大致如下：
+//
+// 客户端通过 API 发起一个 watch 请求（比如 watch pod）。
+//
+// kube-apiserver 的 storage/cacher.go 中的 AddWatcher 方法被调用。
+//
+// Cacher 会根据 watch 请求的范围（namespace、name、fieldSelector 等）：
+//
+// 把这个 watcher 加入 indexedWatchers.allWatchers
+//
+// 或者加入 indexedWatchers.valueWatchers
+//
+// 当事件发生时，Cacher 调用 startDispatching 会根据 indexedWatchers 中的索引结构找出所有匹配的 watcher 并发送事件。
 type indexedWatchers struct {
-	allWatchers   map[namespacedName]watchersMap
+	// {:allWatchers
+	//
+	//	 {namespace: "default", name: "mypod"} => [watcher1, watcher2]
+	//	 {namespace: "kube-system"} => [watcher3]  // 所有该 ns 的资源
+	//	 {name: "mypod"} => [watcher4]            // 集群范围下的某个名字的资源
+	//	 {} => [watcher5]                         // 集群范围的全量 watcher（如 kubectl get pod --all-namespaces --watch）
+	//	}
+	allWatchers map[namespacedName]watchersMap
+	//{:valueWatchers
+	//  "status.phase=Running" => [watcherA, watcherB],
+	//  "spec.nodeName=node-1" => [watcherC],
+	//}
 	valueWatchers map[string]watchersMap
 }
 
@@ -315,6 +339,7 @@ type Cacher struct {
 	dispatching bool
 	// watchersBuffer is a list of watchers potentially interested in currently
 	// dispatched event.
+	//watchersBuffer 本质上就是一个临时缓冲区，用于在事件分发前，先把所有「应该接收到这个事件的 watcher」筛选出来放进去，便于后续统一发送事件。
 	watchersBuffer []*cacheWatcher
 	// blockedWatchers is a list of watchers whose buffer is currently full.
 	blockedWatchers []*cacheWatcher
@@ -402,6 +427,23 @@ func NewCacherFromConfig(config Config) (*Cacher, error) {
 		<-cacher.timer.C
 	}
 	var contextMetadata metadata.MD
+	//) 防止 Watch 请求饥饿（Starvation）
+	//Kubernetes API Server 的 Watch 请求有两种来源：
+	//
+	//直接来自客户端（绕过缓存，直接访问 etcd）。
+	//
+	//来自 Cacher（缓存层，用于提高性能）。
+	//
+	//如果所有 Watch 请求都走同一个 gRPC 连接，来自客户端的 Watch 请求可能会挤占 Cacher 的 Watch 请求，导致缓存更新延迟。
+	//
+	//解决方案：
+	//通过 source: "cache" 标记，让 Cacher 的 Watch 请求走独立的 RPC 通道，避免被客户端请求阻塞。
+	//
+	//(2) 确保 Progress Notification 和 Watch 在同一个 RPC 上
+	//Kubernetes Watch 机制要求 Progress Notification（进度通知）必须和它对应的 Watch 请求在同一个 gRPC 连接上，否则客户端可能收不到更新。
+	//
+	//解决方案：
+	//给 Cacher 的 Watch 和 Progress Notification 都打上 source: "cache"，确保它们走同一个 RPC 通道。
 	if utilfeature.DefaultFeatureGate.Enabled(features.SeparateCacheWatchRPC) {
 		// Add grpc context metadata to watch and progress notify requests done by cacher to:
 		// * Prevent starvation of watch opened by cacher, by moving it to separate Watch RPC than watch request that bypass cacher.
@@ -410,6 +452,7 @@ func NewCacherFromConfig(config Config) (*Cacher, error) {
 	}
 
 	progressRequester := newConditionalProgressRequester(config.Storage.RequestWatchProgress, config.Clock, contextMetadata)
+	//是一个map
 	watchCache := newWatchCache(
 		config.KeyFunc, cacher.processEvent, config.GetAttrsFunc, config.Versioner, config.Indexers, config.Clock, config.GroupResource, progressRequester)
 	listerWatcher := NewListerWatcher(config.Storage, config.ResourcePrefix, config.NewListFunc, contextMetadata)
@@ -418,13 +461,32 @@ func NewCacherFromConfig(config Config) (*Cacher, error) {
 	reflector := cache.NewNamedReflector(reflectorName, listerWatcher, obj, watchCache, 0)
 	// Configure reflector's pager to for an appropriate pagination chunk size for fetching data from
 	// storage. The pager falls back to full list if paginated list calls fail due to an "Expired" error.
+	// 设置分页 List 的每页大小（chunk size）
+	//这个字段会告诉 Reflector：当执行 List 请求（拉取资源列表）时，使用分页方式，单页最多 storageWatchListPageSize 个对象。
+	//
+	//避免一次性 list 太多对象打挂 API Server。
+	//
+	//如果分页失败（例如遇到 Expired 错误），Reflector 会自动降级为 全量 list。
 	reflector.WatchListPageSize = storageWatchListPageSize
+
 	// When etcd loses leader for 3 cycles, it returns error "no leader".
 	// We don't want to terminate all watchers as recreating all watchers puts high load on api-server.
 	// In most of the cases, leader is reelected within few cycles.
+	// 设置内部错误的最大重试窗口
+	//当底层 etcd 报错，例如 “no leader”（常见于 etcd 选主丢失）时，不要立刻终止 watch。
+	//
+	//Reflector 会在 30 秒内持续尝试恢复。
+	//
+	//目的是避免高频反复创建 Watch，减轻 kube-apiserver 压力。
 	reflector.MaxInternalErrorRetryDuration = time.Second * 30
 	// since the watch-list is provided by the watch cache instruct
 	// the reflector to issue a regular LIST against the store
+	// 告诉 Reflector 不使用 watch-cache 提供的 WatchList，改为直接 List
+	//在开启 cacher 模式下，Reflector 实际上是 通过 ListerWatcher 向底层存储（etcd）发起 LIST 请求，跳过 WatchList 优化路径。
+	//
+	//即：直接 LIST 而不是通过 WatchList 来分页+追 watch。
+	//
+	//因为在 cacher 场景下，它想从 原始存储拉取数据来初始化 watchCache，不使用其他 cache。
 	reflector.UseWatchList = ptr.To(false)
 
 	cacher.watchCache = watchCache
@@ -1032,6 +1094,11 @@ func (c *Cacher) processEvent(event *watchCacheEvent) {
 
 func (c *Cacher) dispatchEvents() {
 	// Jitter to help level out any aggregate load.
+	//用于定时生成 Bookmark 事件（大约每 1 秒，加入 25% 抖动防止同步放大）；
+	//
+	//Bookmark 是一种轻量级事件，用来告知客户端当前 ResourceVersion 进度，而不携带实际对象数据；
+	//
+	//对于客户端而言，它们用来做 watch 续接或 RV 进度确认。
 	bookmarkTimer := c.clock.NewTimer(wait.Jitter(time.Second, 0.25))
 	defer bookmarkTimer.Stop()
 
@@ -1040,6 +1107,13 @@ func (c *Cacher) dispatchEvents() {
 	// The cache must wait until this first sync is completed to be deemed ready.
 	// Since we cannot send a bookmark when the lastProcessedResourceVersion is 0,
 	// we poll aggressively for the first list RV before entering the dispatch loop.
+	//Cacher 启动时，不立刻开始调度事件；
+	//
+	//它等待内部 watchCache 完成第一次同步（第一次 list 成功）；
+	//
+	//因为没有 RV 的话是不能发 Bookmark 的（客户端可能用来 resume watch）；
+	//
+	//每 10ms 轮询，直到获取到第一个非零 ResourceVersion。
 	lastProcessedResourceVersion := uint64(0)
 	if err := wait.PollUntilContextCancel(wait.ContextForChannel(c.stopCh), 10*time.Millisecond, true, func(_ context.Context) (bool, error) {
 		if rv := c.watchCache.getListResourceVersion(); rv != 0 {
@@ -1054,6 +1128,15 @@ func (c *Cacher) dispatchEvents() {
 	}
 	for {
 		select {
+		//来自存储层（例如 etcd）的变更事件；
+		//
+		//丢弃 Bookmark 类型（存储层可能秒级发送，很频繁）；
+		//
+		//调用 dispatchEvent 分发出去；
+		//
+		//更新当前处理到的 ResourceVersion；
+		//
+		//增加 Prometheus 监控计数。
 		case event, ok := <-c.incoming:
 			if !ok {
 				return
@@ -1074,6 +1157,15 @@ func (c *Cacher) dispatchEvents() {
 			lastProcessedResourceVersion = event.ResourceVersion
 			metrics.EventsCounter.WithLabelValues(c.groupResource.String()).Inc()
 		case <-bookmarkTimer.C():
+			//每秒发送一个当前 RV 的 Bookmark；
+			//
+			//用于让客户端知道进度，便于：
+			//
+			//客户端判断 watch 是否卡住；
+			//
+			//后续重连用相同 RV resume；
+			//
+			//Bookmark 事件是假的，但带着合法 RV，会调用 versioner.UpdateObject 设置进对象的 metadata 里。
 			bookmarkTimer.Reset(wait.Jitter(time.Second, 0.25))
 			bookmarkEvent := &watchCacheEvent{
 				Type:            watch.Bookmark,
@@ -1194,10 +1286,20 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 	}
 }
 
+// bookmark 事件会被加入缓冲区而不是立即发送，主要是为了提高系统的效率和减少不必要的资源消耗。
+// 在系统负载较高时，频繁发送 bookmark 事件可能导致性能问题，因此将其缓存在内存中，待合适时机批量处理，或在有更多的事件需要处理时一起发送。
 func (c *Cacher) startDispatchingBookmarkEventsLocked() {
 	// Pop already expired watchers. However, explicitly ignore stopped ones,
 	// as we don't delete watcher from bookmarkWatchers when it is stopped.
 	for _, watchers := range c.bookmarkWatchers.popExpiredWatchersThreadUnsafe() {
+		//清理过期的 watchers：通过 popExpiredWatchersThreadUnsafe 方法，
+		//它首先将过期的 watchers 弹出并进行处理。过期的 watcher 将被移除，同时不会继续收到 bookmark 事件。
+		//
+		//处理已过期的 watchers：将未停止且已过期的 watcher 添加到 watchersBuffer 中，
+		//准备后续的处理或调度，并且记录它们到 expiredBookmarkWatchers 中。
+		//
+		//防止处理停止的 watcher：通过 if watcher.stopped { continue } 来跳过已经停止的 watchers。
+		//停止的 watchers 不应该再被派发事件，因此避免了不必要的操作。
 		for _, watcher := range watchers {
 			// c.Lock() is held here.
 			// watcher.stopThreadUnsafe() is protected by c.Lock()
@@ -1212,10 +1314,16 @@ func (c *Cacher) startDispatchingBookmarkEventsLocked() {
 
 // startDispatching chooses watchers potentially interested in a given event
 // a marks dispatching as true.
+// 该方法的作用是选择那些对给定事件感兴趣的 watchers，并将它们准备好以便事件分发。
+//
+// dispatching 会被标记为 true，表示事件正在被分发。
 func (c *Cacher) startDispatching(event *watchCacheEvent) {
 	// It is safe to call triggerValuesThreadUnsafe here, because at this
 	// point only this thread can access this event (we create a separate
 	// watchCacheEvent for every dispatch).
+	//调用 triggerValuesThreadUnsafe(event) 来获取与事件相关的触发条件值（triggerValues）。这些值是用于筛选出对该事件感兴趣的 watchers。
+	//
+	//supported 表示事件是否支持这些触发条件。如果 supported 为 false，则表示该事件不支持根据触发条件来筛选 watchers。
 	triggerValues, supported := c.triggerValuesThreadUnsafe(event)
 
 	c.Lock()
@@ -1227,8 +1335,13 @@ func (c *Cacher) startDispatching(event *watchCacheEvent) {
 	// from previous phases that are sitting behind the current length
 	// of the slice, but there is only a limited number of those and the
 	// gain from avoiding memory allocations is much bigger.
+	//清空 watchersBuffer，为存储当前事件感兴趣的 watchers 做准备。
 	c.watchersBuffer = c.watchersBuffer[:0]
-
+	//如果事件类型是 Bookmark，调用 startDispatchingBookmarkEventsLocked() 处理 Bookmark 类型事件。Bookmark 类型事件是 Kubernetes 中用来维持 watch 状态的一种特殊事件。
+	//
+	//然后返回，跳过后续的处理，因为 Bookmark 类型事件的处理已经完成。
+	//bookmark 事件会被加入缓冲区而不是立即发送，主要是为了提高系统的效率和减少不必要的资源消耗。在系统负载较高时，
+	//频繁发送 bookmark 事件可能导致性能问题，因此将其缓存在内存中，待合适时机批量处理，或在有更多的事件需要处理时一起发送。
 	if event.Type == watch.Bookmark {
 		c.startDispatchingBookmarkEventsLocked()
 		// return here to reduce following code indentation and diff
@@ -1236,8 +1349,16 @@ func (c *Cacher) startDispatching(event *watchCacheEvent) {
 	}
 
 	// iterate over watchers for each applicable namespace/name tuple
+	//获取事件对象的 namespace 和 name，这些信息用于决定哪些 watchers 应该接收到事件。
 	namespace := event.ObjFields["metadata.namespace"]
 	name := event.ObjFields["metadata.name"]
+	//根据事件的 namespace 和 name，筛选出与之匹配的 watchers。Kubernetes 中的 watchers 可以是：
+	//
+	//命名空间限定的 watcher：这些 watchers 只会关注某个特定命名空间中的资源。
+	//
+	//名称限定的 watcher：这些 watchers 只会关注特定名称的资源。
+	//
+	//集群范围的 watcher：这些 watchers 不关心命名空间，只关注全局范围的资源。
 	if len(namespace) > 0 {
 		if len(name) > 0 {
 			// namespaced watchers scoped by name
@@ -1260,7 +1381,7 @@ func (c *Cacher) startDispatching(event *watchCacheEvent) {
 	for _, watcher := range c.watchers.allWatchers[namespacedName{}] {
 		c.watchersBuffer = append(c.watchersBuffer, watcher)
 	}
-
+	//如果事件支持触发值（supported 为 true），遍历 triggerValues，并将所有感兴趣的 watchers 添加到 watchersBuffer 中。
 	if supported {
 		// Iterate over watchers interested in the given values of the trigger.
 		for _, triggerValue := range triggerValues {
@@ -1276,6 +1397,7 @@ func (c *Cacher) startDispatching(event *watchCacheEvent) {
 		// misconfiguration. Thus we paranoidly leave this branch.
 
 		// Iterate over watchers interested in exact values for all values.
+		//如果不支持触发值（supported 为 false），则遍历所有的 valueWatchers，将感兴趣的 watchers 添加到 watchersBuffer 中。
 		for _, watchers := range c.watchers.valueWatchers {
 			for _, watcher := range watchers {
 				c.watchersBuffer = append(c.watchersBuffer, watcher)

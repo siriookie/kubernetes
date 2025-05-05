@@ -97,6 +97,7 @@ func NewAutoscaleOptions(ioStreams genericiooptions.IOStreams) *AutoscaleOptions
 }
 
 // NewCmdAutoscale returns the autoscale Cobra command
+// 示例：kubectl autoscale deployment my-app --min=2 --max=10 --cpu-percent=80
 func NewCmdAutoscale(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewAutoscaleOptions(ioStreams)
 
@@ -187,6 +188,7 @@ func (o *AutoscaleOptions) Validate() error {
 }
 
 // Run performs the execution
+// 负责创建 HPA（Horizontal Pod Autoscaler） 资源
 func (o *AutoscaleOptions) Run() error {
 	r := o.builder.
 		Unstructured().
@@ -207,13 +209,19 @@ func (o *AutoscaleOptions) Run() error {
 		}
 
 		mapping := info.ResourceMapping()
+		//获取资源的 GVR（Group-Version-Resource）：
+		//例如 Deployment 的 GVR 是：
+		//apiVersion: apps/v1
+		//kind: Deployment
+		//GVR: apps/v1, resource: deployments
 		gvr := mapping.GroupVersionKind.GroupVersion().WithResource(mapping.Resource.Resource)
+		//检查该资源是否支持扩缩容：
 		if _, err := o.scaleKindResolver.ScaleForResource(gvr); err != nil {
 			return fmt.Errorf("cannot autoscale a %v: %v", mapping.GroupVersionKind.Kind, err)
 		}
-
+		//生成 HorizontalPodAutoscaler 对象。
 		hpa := o.createHorizontalPodAutoscaler(info.Name, mapping)
-
+		//记录 kubectl autoscale 命令，方便 kubectl apply -f 恢复 HPA 资源。
 		if err := o.Recorder.Record(hpa); err != nil {
 			klog.V(4).Infof("error recording current command: %v", err)
 		}
@@ -239,6 +247,7 @@ func (o *AutoscaleOptions) Run() error {
 		if o.dryRunStrategy == cmdutil.DryRunServer {
 			createOptions.DryRun = []string{metav1.DryRunAll}
 		}
+		//创建/更新 kubectl 注解，标记该资源是 kubectl autoscale 生成的。
 		actualHPA, err := o.HPAClient.HorizontalPodAutoscalers(o.namespace).Create(context.TODO(), hpa, createOptions)
 		if err != nil {
 			return err

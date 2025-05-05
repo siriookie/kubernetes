@@ -60,6 +60,7 @@ func logsForObject(restClientGetter genericclioptions.RESTClientGetter, object, 
 	return logsForObjectWithClient(clientset, object, options, timeout, allContainers, false)
 }
 
+// 根据不同的 Kubernetes 资源（Pod、PodList、Deployment 等）获取日志流
 // this is split for easy test-ability
 func logsForObjectWithClient(clientset corev1client.CoreV1Interface, object, options runtime.Object, timeout time.Duration, allContainers bool, allPods bool) (map[corev1.ObjectReference]rest.ResponseWrapper, error) {
 	opts, ok := options.(*corev1.PodLogOptions)
@@ -71,6 +72,7 @@ func logsForObjectWithClient(clientset corev1client.CoreV1Interface, object, opt
 	case *corev1.PodList:
 		ret := make(map[corev1.ObjectReference]rest.ResponseWrapper)
 		for i := range t.Items {
+			//遍历每个 Pod，递归调用 logsForObjectWithClient 获取日志请求。
 			currRet, err := logsForObjectWithClient(clientset, &t.Items[i], options, timeout, allContainers, allPods)
 			if err != nil {
 				return nil, err
@@ -83,7 +85,8 @@ func logsForObjectWithClient(clientset corev1client.CoreV1Interface, object, opt
 
 	case *corev1.Pod:
 		// if allContainers is true, then we're going to locate all containers and then iterate through them. At that point, "allContainers" is false
-		if !allContainers {
+		if !allContainers { // 只获取默认容器日志
+			//创建 PodLogOptions 副本，避免修改原始 options。
 			currOpts := new(corev1.PodLogOptions)
 			if opts != nil {
 				opts.DeepCopyInto(currOpts)

@@ -92,13 +92,13 @@ func (e WorkEstimatorFunc) EstimateWork(r *http.Request, flowSchemaName, priorit
 
 type workEstimator struct {
 	// the minimum number of seats a request must occupy
-	minimumSeats uint64
+	minimumSeats uint64 //取DefaultWorkEstimatorConfig中配置的默认的最小seats
 	// the default maximum number of seats a request can occupy
-	maximumSeatsLimit uint64
+	maximumSeatsLimit uint64 //取DefaultWorkEstimatorConfig中配置的默认的最大seats
 	// listWorkEstimator estimates work for list request(s)
-	listWorkEstimator WorkEstimatorFunc
+	listWorkEstimator WorkEstimatorFunc // 对list类型的工作估算func
 	// mutatingWorkEstimator calculates the width of mutating request(s)
-	mutatingWorkEstimator WorkEstimatorFunc
+	mutatingWorkEstimator WorkEstimatorFunc // 对别的类型的工作估算func
 }
 
 func (e *workEstimator) estimate(r *http.Request, flowSchemaName, priorityLevelName string) WorkEstimate {
@@ -113,6 +113,9 @@ func (e *workEstimator) estimate(r *http.Request, flowSchemaName, priorityLevelN
 	case "list":
 		return e.listWorkEstimator.EstimateWork(r, flowSchemaName, priorityLevelName)
 	case "watch":
+		//// WATCH支持SendInitialEvents选项，这意味着它实际上是从发送相应LIST调用的内容开始的。
+		//// 从这个角度来看，考虑到watch只在初始化期间（发送初始事件）消耗APF座位，
+		//// 那么它的成本应该和常规list的成本计算方式相同。
 		// WATCH supports `SendInitialEvents` option, which effectively means
 		// that is starts with sending of the contents of a corresponding LIST call.
 		// From that perspective, given that the watch only consumes APF seats

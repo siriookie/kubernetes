@@ -94,6 +94,11 @@ func (s *ServerRunOptions) Complete(ctx context.Context) (CompletedOptions, erro
 	}, nil
 }
 
+// Kubernetes 中每个 Service 都分配一个集群内访问 IP（ClusterIP），此参数控制的是 API Server 可以使用的 IP 地址段。
+// 会把 --service-cluster-ip-range 解析为：
+// PrimaryServiceClusterIPRange
+// SecondaryServiceClusterIPRange（IPv4+IPv6 双栈时才用到）
+// apiServerServiceIP：专门用于 kube-apiserver service 的 IP 地址。
 func getServiceIPAndRanges(serviceClusterIPRanges string) (net.IP, net.IPNet, net.IPNet, error) {
 	serviceClusterIPRangeList := []string{}
 	if serviceClusterIPRanges != "" {

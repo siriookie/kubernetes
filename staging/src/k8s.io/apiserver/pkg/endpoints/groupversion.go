@@ -74,7 +74,7 @@ type APIGroupVersion struct {
 	// the wire.
 	Serializer     runtime.NegotiatedSerializer
 	ParameterCodec runtime.ParameterCodec
-
+	//类型解析器
 	Typer                 runtime.ObjectTyper
 	Creater               runtime.ObjectCreater
 	Convertor             runtime.ObjectConvertor

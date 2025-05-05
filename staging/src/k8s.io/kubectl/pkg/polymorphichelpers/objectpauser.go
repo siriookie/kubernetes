@@ -29,6 +29,7 @@ import (
 )
 
 // Currently only supports Deployments.
+// defaultObjectPauser 主要用于暂停 (pause) Kubernetes 的 Deployment 资源。
 func defaultObjectPauser(obj runtime.Object) ([]byte, error) {
 	switch obj := obj.(type) {
 	case *extensionsv1beta1.Deployment:

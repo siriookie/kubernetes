@@ -124,6 +124,7 @@ func withAuthentication(handler http.Handler, auth authenticator.Request, failed
 	})
 }
 
+// 当认证失败（比如没有 token 或 token 非法）时，就会调用这个 handler 返回标准的 Unauthorized 响应。
 func Unauthorized(s runtime.NegotiatedSerializer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// http2 is an expensive protocol that is prone to abuse,

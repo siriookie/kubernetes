@@ -133,18 +133,27 @@ func (a *abortOnFirstError) Err() error { return a.err }
 
 // New returns an etcd3 implementation of storage.Interface.
 func New(c *kubernetes.Client, codec runtime.Codec, newFunc, newListFunc func() runtime.Object, prefix, resourcePrefix string, groupResource schema.GroupResource, transformer value.Transformer, leaseManagerConfig LeaseManagerConfig, decoder Decoder, versioner storage.Versioner) storage.Interface {
+	// 检查特性开关 AllowUnsafeMalformedObjectDeletion 是否启用
 	if utilfeature.DefaultFeatureGate.Enabled(features.AllowUnsafeMalformedObjectDeletion) {
+		// 如果启用，对转换器进行包装，添加处理损坏对象错误的功能
 		transformer = WithCorruptObjErrorHandlingTransformer(transformer)
+		// 如果启用，对解码器进行包装，添加处理损坏对象错误的功能
 		decoder = WithCorruptObjErrorHandlingDecoder(decoder)
 	}
+
+	// 创建一个新的存储实例
 	var store storage.Interface
 	store = newStore(c, codec, newFunc, newListFunc, prefix, resourcePrefix, groupResource, transformer, leaseManagerConfig, decoder, versioner)
+
+	// 再次检查特性开关 AllowUnsafeMalformedObjectDeletion 是否启用
 	if utilfeature.DefaultFeatureGate.Enabled(features.AllowUnsafeMalformedObjectDeletion) {
+		// 如果启用，对存储实例进行包装，添加处理不安全的损坏对象删除的功能
 		store = NewStoreWithUnsafeCorruptObjectDeletion(store, groupResource)
 	}
+
+	// 返回最终的存储实例
 	return store
 }
-
 func newStore(c *kubernetes.Client, codec runtime.Codec, newFunc, newListFunc func() runtime.Object, prefix, resourcePrefix string, groupResource schema.GroupResource, transformer value.Transformer, leaseManagerConfig LeaseManagerConfig, decoder Decoder, versioner storage.Versioner) *store {
 	// for compatibility with etcd2 impl.
 	// no-op for default prefix of '/registry'.
