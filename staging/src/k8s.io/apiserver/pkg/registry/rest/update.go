@@ -203,6 +203,15 @@ func (i *defaultUpdatedObjectInfo) Preconditions() *metav1.Preconditions {
 
 // UpdatedObject satisfies the UpdatedObjectInfo interface.
 // It returns a copy of the held obj, passed through any configured transformers.
+// 你可以把它看作 Update 请求中获取“最终”新对象的标准流程。比如用户通过 API 请求修改了某个资源（如 Deployment），最终的新对象要：
+//
+// 保留已有字段（来自 oldObj），
+//
+// 覆盖变更字段（来自 i.obj），
+//
+// 加入默认值、清理字段等（通过 transformer），
+//
+// 返回用于写入 etcd。
 func (i *defaultUpdatedObjectInfo) UpdatedObject(ctx context.Context, oldObj runtime.Object) (runtime.Object, error) {
 	var err error
 	// Start with the configured object
@@ -211,11 +220,13 @@ func (i *defaultUpdatedObjectInfo) UpdatedObject(ctx context.Context, oldObj run
 	// If the original is non-nil (might be nil if the first transformer builds the object from the oldObj), make a copy,
 	// so we don't return the original. BeforeUpdate can mutate the returned object, doing things like clearing ResourceVersion.
 	// If we're re-called, we need to be able to return the pristine version.
+	//防止对象被后续逻辑修改，因此做深拷贝。
 	if newObj != nil {
 		newObj = newObj.DeepCopyObject()
 	}
 
 	// Allow any configured transformers to update the new object
+	//依次执行 transformer 链，允许它们对新对象做加工、验证、清理字段等操作。
 	for _, transformer := range i.transformers {
 		newObj, err = transformer(ctx, newObj, oldObj)
 		if err != nil {

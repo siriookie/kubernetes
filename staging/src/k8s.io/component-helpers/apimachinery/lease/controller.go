@@ -101,13 +101,7 @@ func (c *controller) Run(ctx context.Context) {
 
 func (c *controller) sync(ctx context.Context) {
 	if c.latestLease != nil {
-		// As long as the lease is not (or very rarely) updated by any other agent than the component itself,
-		// we can optimistically assume it didn't change since our last update and try updating
-		// based on the version from that time. Thanks to it we avoid GET call and reduce load
-		// on etcd and kube-apiserver.
-		// If at some point other agents will also be frequently updating the Lease object, this
-		// can result in performance degradation, because we will end up with calling additional
-		// GET/PUT - at this point this whole "if" should be removed.
+		// 尝试使用最新的 Lease 进行续约
 		err := c.retryUpdateLease(ctx, c.latestLease)
 		if err == nil {
 			return
@@ -115,9 +109,10 @@ func (c *controller) sync(ctx context.Context) {
 		klog.FromContext(ctx).Info("failed to update lease using latest lease, fallback to ensure lease", "err", err)
 	}
 
+	// 如果续约失败，确保 Lease 存在
 	lease, created := c.backoffEnsureLease(ctx)
 	c.latestLease = lease
-	// we don't need to update the lease if we just created it
+	// 如果 Lease 被创建，跳过续约
 	if !created && lease != nil {
 		if err := c.retryUpdateLease(ctx, lease); err != nil {
 			klog.FromContext(ctx).Error(err, "Will retry updating lease", "interval", c.renewInterval)

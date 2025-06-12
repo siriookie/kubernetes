@@ -309,6 +309,7 @@ func (c *Config) Complete() CompletedConfig {
 // Certain config fields must be specified, including:
 // KubeletClientConfig
 func (c CompletedConfig) New(delegationTarget genericapiserver.DelegationTarget) (*Instance, error) {
+	//这是在校验配置：如果没有设置用于连接 Kubelet 的配置（比如 /pods, /exec, /portforward 等需要和 kubelet 通信），就报错退出。
 	if reflect.DeepEqual(c.Extra.KubeletClientConfig, kubeletclient.KubeletClientConfig{}) {
 		return nil, fmt.Errorf("Master.New() called with empty config.KubeletClientConfig")
 	}
@@ -326,7 +327,7 @@ func (c CompletedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	if err != nil {
 		return nil, err
 	}
-
+	//创建各种provider 实际上是不同的struct，都实现了NewRESTStorage方法，，然后在下面的函数中调用。完成注册api逻辑
 	restStorageProviders, err := c.StorageProviders(client.Discovery())
 	if err != nil {
 		return nil, err

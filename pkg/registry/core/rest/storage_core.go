@@ -148,6 +148,7 @@ func New(c Config) (*legacyProvider, error) {
 	return p, nil
 }
 
+// 它正是负责创建 core/v1 下所有资源（包括 pods）的 storage 注册逻辑。
 func (p *legacyProvider) NewRESTStorage(apiResourceConfigSource serverstorage.APIResourceConfigSource, restOptionsGetter generic.RESTOptionsGetter) (genericapiserver.APIGroupInfo, error) {
 	apiGroupInfo, err := p.GenericConfig.NewRESTStorage(apiResourceConfigSource, restOptionsGetter)
 	if err != nil {

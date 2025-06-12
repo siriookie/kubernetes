@@ -93,6 +93,7 @@ func (c *APIServiceRegistrationController) sync(key string) error {
 }
 
 // Run starts APIServiceRegistrationController which will process all registration requests until stopCh is closed.
+// 主要目的是同步和管理 Kubernetes API 服务的注册状态，并确保代理处理器（proxy handler）可以正确初始化。
 func (c *APIServiceRegistrationController) Run(stopCh <-chan struct{}, handlerSyncedCh chan<- struct{}) {
 	defer utilruntime.HandleCrash()
 	defer c.queue.ShutDown()

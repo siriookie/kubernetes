@@ -281,7 +281,9 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 	if err := s.GenericAPIServer.InstallAPIGroup(&apiGroupInfo); err != nil {
 		return nil, err
 	}
-
+	//enabledVersions 存储启用的 API 版本。
+	//
+	//检查指定的 v1.SchemeGroupVersion.Version 是否在启用的版本列表中，如果没有启用，返回错误。
 	enabledVersions := sets.NewString()
 	for v := range apiGroupInfo.VersionedResourcesStorageMap {
 		enabledVersions.Insert(v)
@@ -289,13 +291,19 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 	if !enabledVersions.Has(v1.SchemeGroupVersion.Version) {
 		return nil, fmt.Errorf("API group/version %s must be enabled", v1.SchemeGroupVersion.String())
 	}
-
+	//创建一个 apisHandler 实例，处理与 API 资源相关的请求。它包含：
+	//
+	//codecs：用于编解码的工具。
+	//
+	//lister：用于列出 API 资源。
+	//
+	//discoveryGroup：用于 API 资源发现。
 	apisHandler := &apisHandler{
 		codecs:         aggregatorscheme.Codecs,
 		lister:         s.lister,
 		discoveryGroup: discoveryGroup(enabledVersions),
 	}
-
+	//检查是否启用了 聚合发现（Aggregated Discovery），如果启用了，则使用支持聚合发现的处理器来处理 /apis 路径上的请求。
 	if utilfeature.DefaultFeatureGate.Enabled(genericfeatures.AggregatedDiscoveryEndpoint) {
 		apisHandlerWithAggregationSupport := aggregated.WrapAggregatedDiscoveryToHandler(apisHandler, s.GenericAPIServer.AggregatedDiscoveryGroupManager)
 		s.GenericAPIServer.Handler.NonGoRestfulMux.Handle("/apis", apisHandlerWithAggregationSupport)
@@ -303,8 +311,9 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 		s.GenericAPIServer.Handler.NonGoRestfulMux.Handle("/apis", apisHandler)
 	}
 	s.GenericAPIServer.Handler.NonGoRestfulMux.UnlistedHandle("/apis/", apisHandler)
-
+	//创建 APIServiceRegistrationController 控制器，用于注册 API 服务。
 	apiserviceRegistrationController := NewAPIServiceRegistrationController(informerFactory.Apiregistration().V1().APIServices(), s)
+	//检查是否配置了 代理客户端证书和私钥 文件。如果有，使用 dynamiccertificates.NewDynamicServingContentFromFiles 加载证书，并启动证书管理。
 	if len(c.ExtraConfig.ProxyClientCertFile) > 0 && len(c.ExtraConfig.ProxyClientKeyFile) > 0 {
 		aggregatorProxyCerts, err := dynamiccertificates.NewDynamicServingContentFromFiles("aggregator-proxy-cert", c.ExtraConfig.ProxyClientCertFile, c.ExtraConfig.ProxyClientKeyFile)
 		if err != nil {
@@ -317,7 +326,7 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 		}
 		aggregatorProxyCerts.AddListener(apiserviceRegistrationController)
 		s.proxyCurrentCertKeyContent = aggregatorProxyCerts.CurrentCertKeyContent
-
+		//在启动时添加一个钩子，启动 Informer，它用于监听和同步 Kubernetes 中的资源
 		s.GenericAPIServer.AddPostStartHookOrDie("aggregator-reload-proxy-client-cert", func(postStartHookContext genericapiserver.PostStartHookContext) error {
 			go aggregatorProxyCerts.Run(postStartHookContext, 1)
 			return nil
@@ -375,7 +384,7 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 			return nil
 		})
 	}
-
+	//注册 APIServiceRegistrationController，确保 API 服务正确注册到系统中。
 	s.GenericAPIServer.AddPostStartHookOrDie("apiservice-registration-controller", func(context genericapiserver.PostStartHookContext) error {
 		go apiserviceRegistrationController.Run(context.Done(), apiServiceRegistrationControllerInitiated)
 		select {
@@ -421,7 +430,7 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 			return nil
 		})
 	}
-
+	//如果启用了 聚合发现，则初始化并运行 DiscoveryManager，该管理器负责合并所有 API 服务的发现信息。
 	if utilfeature.DefaultFeatureGate.Enabled(genericfeatures.StorageVersionAPI) &&
 		utilfeature.DefaultFeatureGate.Enabled(genericfeatures.APIServerIdentity) {
 		// Spawn a goroutine in aggregator apiserver to update storage version for

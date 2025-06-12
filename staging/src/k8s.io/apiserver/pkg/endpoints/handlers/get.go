@@ -170,6 +170,11 @@ func getRequestOptions(req *http.Request, scope *RequestScope, into runtime.Obje
 	return scope.ParameterCodec.DecodeParameters(query, scope.Kind.GroupVersion(), into)
 }
 
+// 这是一个 HTTP 处理函数，用于处理 Kubernetes API 的两种请求：
+//
+// # List 请求 - 获取某个资源类型的全部或筛选后的列表
+//
+// Watch 请求 - 监听某个资源类型的变更（创建/更新/删除）
 func ListResource(r rest.Lister, rw rest.Watcher, scope *RequestScope, forceWatch bool, minRequestTimeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
@@ -186,6 +191,18 @@ func ListResource(r rest.Lister, rw rest.Watcher, scope *RequestScope, forceWatc
 		// Watches for single objects are routed to this function.
 		// Treat a name parameter the same as a field selector entry.
 		hasName := true
+		//如果有 name 参数：优化为单个对象查询
+		//如果是 Watch 请求(opts.Watch || forceWatch)：
+		//设置超时时间
+		//创建 Watcher 监听资源变更
+		//启动单独的 goroutine 处理 Watch 连接
+		//如果是普通 List 请求：
+		//
+		//从存储后端获取资源列表
+		//
+		//转换响应对象格式
+		//
+		//返回 HTTP 响应
 		_, name, err := scope.Namer.Name(req)
 		if err != nil {
 			hasName = false
@@ -230,7 +247,7 @@ func ListResource(r rest.Lister, rw rest.Watcher, scope *RequestScope, forceWatc
 				return
 			}
 		}
-
+		//如果有 name 参数：优化为单个对象查询
 		if hasName {
 			// metadata.name is the canonical internal name.
 			// SelectionPredicate will notice that this is a request for
@@ -253,7 +270,11 @@ func ListResource(r rest.Lister, rw rest.Watcher, scope *RequestScope, forceWatc
 				opts.FieldSelector = nameSelector
 			}
 		}
-
+		//若是 watch 请求，就开启 Watch 流，使用 rw.Watch() 创建一个监听器；
+		//
+		//设置超时时间；
+		//
+		//将事件流通过 HTTP 长连接持续推送给客户端。
 		if opts.Watch || forceWatch {
 			if rw == nil {
 				scope.err(errors.NewMethodNotSupported(scope.Resource.GroupResource(), "watch"), w, req)
@@ -285,6 +306,7 @@ func ListResource(r rest.Lister, rw rest.Watcher, scope *RequestScope, forceWatc
 				scope.err(err, w, req)
 				return
 			}
+			//把事件取出来发送给客户端的handler，支持websocket和http chunked
 			handler, err := serveWatchHandler(watcher, scope, outputMediaType, req, w, timeout, metrics.CleanListScope(ctx, &opts), emptyVersionedList)
 			if err != nil {
 				scope.err(err, w, req)
@@ -314,6 +336,9 @@ func ListResource(r rest.Lister, rw rest.Watcher, scope *RequestScope, forceWatc
 		}
 
 		// Log only long List requests (ignore Watch).
+		//使用 r.List() 获取资源列表；
+		//
+		//然后通过 transformResponseObject() 把数据写入 HTTP 响应中，序列化为用户指定的格式（比如 JSON）。
 		defer span.End(500 * time.Millisecond)
 		span.AddEvent("About to List from storage")
 		result, err := r.List(ctx, &opts)

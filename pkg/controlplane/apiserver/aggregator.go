@@ -138,10 +138,12 @@ func CreateAggregatorServer(
 	}
 
 	// create controllers for auto-registration
+	//这里创建了一个 apiRegistrationClient，它用于与 API 注册相关的操作，如注册和查询 APIService。LoopbackClientConfig 是用于配置 API 客户端的选项，通常是指向本地的 Kubernetes API 服务器。
 	apiRegistrationClient, err := apiregistrationclient.NewForConfig(aggregatorConfig.GenericConfig.LoopbackClientConfig)
 	if err != nil {
 		return nil, err
 	}
+	//这里创建了一个 autoRegistrationController 控制器，它负责自动注册 API 服务。APIService 对象代表了外部 API 服务的注册信息，控制器会监听这些对象的变化并自动完成相关的注册。
 	autoRegistrationController := autoregister.NewAutoRegisterController(aggregatorServer.APIRegistrationInformers.Apiregistration().V1().APIServices(), apiRegistrationClient)
 	apiServices := apiServicesToRegister(delegateAPIServer, autoRegistrationController, apiVersionPriorities)
 

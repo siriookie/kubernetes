@@ -397,18 +397,21 @@ func Setup(ctx context.Context, opts *options.Options, outOfTreeRegistryOptions 
 	}
 
 	// Get the completed config
+	//补齐缺省字段
 	cc := c.Complete()
 
 	outOfTreeRegistry := make(runtime.Registry)
+	//用于加载外部自定义的调度插件（非内置插件）。官方调度器允许你注册自定义 Filter、Score、Bind 插件，来参与调度流程。
 	for _, option := range outOfTreeRegistryOptions {
 		if err := option(outOfTreeRegistry); err != nil {
 			return nil, nil, err
 		}
 	}
-
+	//创建事件记录器，用于写调度相关事件到 Kubernetes（比如 Warning FailedScheduling）。
 	recorderFactory := getRecorderFactory(&cc)
 	completedProfiles := make([]kubeschedulerconfig.KubeSchedulerProfile, 0)
 	// Create the scheduler.
+	// 创建调度器 Scheduler 实例
 	sched, err := scheduler.New(ctx,
 		cc.Client,
 		cc.InformerFactory,
@@ -432,6 +435,7 @@ func Setup(ctx context.Context, opts *options.Options, outOfTreeRegistryOptions 
 	if err != nil {
 		return nil, nil, err
 	}
+	//如果用户通过 --write-config-to 设置了路径，会把最终配置写入一个文件（方便调试或记录日志）。
 	if err := options.LogOrWriteConfig(klog.FromContext(ctx), opts.WriteConfigTo, &cc.ComponentConfig, completedProfiles); err != nil {
 		return nil, nil, err
 	}

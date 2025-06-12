@@ -46,6 +46,7 @@ func initializationSignalFrom(ctx context.Context) (InitializationSignal, bool) 
 
 // WatchInitialized sends a signal to priority and fairness dispatcher
 // that a given watch request has already been initialized.
+// 这行代码调用了 utilflowcontrol 包中的 WatchInitialized 函数，并将上下文 ctx 作为参数传递。这个函数负责将初始化信号发送到调度器。
 func WatchInitialized(ctx context.Context) {
 	if signal, ok := initializationSignalFrom(ctx); ok {
 		signal.Signal()

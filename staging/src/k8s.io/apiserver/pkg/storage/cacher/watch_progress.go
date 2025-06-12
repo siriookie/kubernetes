@@ -65,6 +65,8 @@ type conditionalProgressRequester struct {
 	stopped bool
 }
 
+// bookmark 是一种轻量级事件，用于让客户端知道它的 watch 进度（即最新的 ResourceVersion），
+// 但不包含对象详情。conditionalProgressRequester 就是负责周期性发出这样的请求的组件。
 func (pr *conditionalProgressRequester) Run(stopCh <-chan struct{}) {
 	ctx := wait.ContextForChannel(stopCh)
 	if pr.contextMetadata != nil {

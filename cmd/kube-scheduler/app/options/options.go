@@ -160,6 +160,8 @@ func (o *Options) ApplyLeaderElectionTo(cfg *kubeschedulerconfig.KubeSchedulerCo
 	}
 	// Obtain CLI args related with leaderelection. Set them to `cfg` if specified in command line.
 	leaderelection := o.Flags.FlagSet("leader election")
+	//逐个检查是否有命令行参数被用户显式修改过
+	//比如 --leader-elect 是否被命令行传入，如果传入了，就用 o.LeaderElection.LeaderElect 这个值覆盖 cfg.LeaderElection.LeaderElect。
 	if leaderelection.Changed("leader-elect") {
 		cfg.LeaderElection.LeaderElect = o.LeaderElection.LeaderElect
 	}
@@ -210,12 +212,14 @@ func (o *Options) initFlags() {
 }
 
 // ApplyTo applies the scheduler options to the given scheduler app configuration.
+// 将 Options 中的配置应用（赋值和初始化）到 调度器的最终运行配置结构体（schedulerappconfig.Config）中，准备让调度器程序真正使用这些配置启动和运行。
 func (o *Options) ApplyTo(logger klog.Logger, c *schedulerappconfig.Config) error {
 	if err := o.ComponentGlobalsRegistry.SetFallback(); err != nil {
 		return err
 	}
 	if len(o.ConfigFile) == 0 {
 		// If the --config arg is not specified, honor the deprecated as well as leader election CLI args.
+		// 没有指定配置文件，使用命令行旧参数（deprecated）和 leader election 配置
 		o.ApplyDeprecated()
 		o.ApplyLeaderElectionTo(o.ComponentConfig)
 		c.ComponentConfig = *o.ComponentConfig
@@ -265,6 +269,7 @@ func (o *Options) ApplyTo(logger klog.Logger, c *schedulerappconfig.Config) erro
 }
 
 // Validate validates all the required options.
+// 在 kube-scheduler 启动之前，会调用这个函数对各种配置项（如认证、授权、指标、API 配置等）做检查，确保不会因为参数问题导致服务启动失败。
 func (o *Options) Validate() []error {
 	var errs []error
 	if err := o.ComponentGlobalsRegistry.SetFallback(); err != nil {
@@ -272,14 +277,15 @@ func (o *Options) Validate() []error {
 	} else {
 		errs = append(errs, o.ComponentGlobalsRegistry.Validate()...)
 	}
+	//检查 KubeSchedulerConfiguration（比如是否有多个 Profile、百分比是否合法、插件设置等）
 	if err := validation.ValidateKubeSchedulerConfiguration(o.ComponentConfig); err != nil {
 		errs = append(errs, err.Errors()...)
 	}
-	errs = append(errs, o.SecureServing.Validate()...)
-	errs = append(errs, o.Authentication.Validate()...)
-	errs = append(errs, o.Authorization.Validate()...)
-	errs = append(errs, o.Metrics.Validate()...)
-
+	errs = append(errs, o.SecureServing.Validate()...)  // HTTPS 服务配置是否完整
+	errs = append(errs, o.Authentication.Validate()...) // 认证配置是否合法
+	errs = append(errs, o.Authorization.Validate()...)  // 授权配置是否合法
+	errs = append(errs, o.Metrics.Validate()...)        // 指标暴露配置是否合法
+	// 验证调度器支持的版本号是否合理
 	effectiveVersion := o.ComponentGlobalsRegistry.EffectiveVersionFor(featuregate.DefaultKubeComponent)
 	if err := utilversion.ValidateKubeEffectiveVersion(effectiveVersion); err != nil {
 		errs = append(errs, err)
@@ -289,6 +295,7 @@ func (o *Options) Validate() []error {
 }
 
 // Config return a scheduler config object
+// 构造 kube-scheduler 的完整运行配置，包括证书、客户端、事件系统、informer、leader election 等。
 func (o *Options) Config(ctx context.Context) (*schedulerappconfig.Config, error) {
 	logger := klog.FromContext(ctx)
 	if o.SecureServing != nil {
@@ -307,11 +314,14 @@ func (o *Options) Config(ctx context.Context) (*schedulerappconfig.Config, error
 	if err != nil {
 		return nil, err
 	}
+	//用于发出调度器行为相关的事件（比如调度成功、失败等）。
 
 	c.EventBroadcaster = events.NewEventBroadcasterAdapterWithContext(ctx, eventClient)
 
 	// Set up leader election if enabled.
 	var leaderElectionConfig *leaderelection.LeaderElectionConfig
+	//如果启用了 HA 模式，调度器需要竞选“主节点”来独占调度任务。
+	//构造 LeaderElectionConfig 来配置竞选相关参数。
 	if c.ComponentConfig.LeaderElection.LeaderElect {
 		// Use the scheduler name in the first profile to record leader election.
 		schedulerName := corev1.DefaultSchedulerName

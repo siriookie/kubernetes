@@ -216,16 +216,29 @@ func (s *store) Get(ctx context.Context, key string, opts storage.GetOptions, ou
 	if err != nil {
 		return err
 	}
+
+	//记录当前时间 startTime，用于计算请求的持续时间。
+	//
+	//然后使用 s.client.Kubernetes.Get 向底层存储（通常是 etcd）发送 GET 请求，获取与 preparedKey 关联的资源。
+	//
+	//使用 metrics.RecordEtcdRequest 记录此次 GET 请求的性能指标，包括请求类型（get）、资源组（s.groupResourceString）、错误信息（err）和请求时间。
 	startTime := time.Now()
 	getResp, err := s.client.Kubernetes.Get(ctx, preparedKey, kubernetes.GetOptions{})
 	metrics.RecordEtcdRequest("get", s.groupResourceString, err, startTime)
 	if err != nil {
 		return err
 	}
+	//validateMinimumResourceVersion 方法检查返回的资源版本是否符合请求的最小版本要求。getResp.Revision 是从 etcd 返回的资源版本号。
+	//
+	//如果资源版本不满足要求（如返回的版本比请求的版本旧），返回相应的错误。
 	if err = s.validateMinimumResourceVersion(opts.ResourceVersion, uint64(getResp.Revision)); err != nil {
 		return err
 	}
-
+	//如果从存储返回的 KV（键值对）为空（即没有找到该资源），根据 opts.IgnoreNotFound 的设置做处理：
+	//
+	//如果 IgnoreNotFound 为 true，则将 out 设置为零值。
+	//
+	//否则，返回一个 KeyNotFound 错误，表示该资源在存储中不存在。
 	if getResp.KV == nil {
 		if opts.IgnoreNotFound {
 			return runtime.SetZeroValue(out)
@@ -237,7 +250,11 @@ func (s *store) Get(ctx context.Context, key string, opts storage.GetOptions, ou
 	if err != nil {
 		return storage.NewInternalError(err)
 	}
-
+	//使用 s.decoder.Decode 将转换后的数据解码到传入的 out 对象中（out 是你想要填充的目标对象）。
+	//
+	//getResp.KV.ModRevision 是该资源的修改版本号。
+	//
+	//如果解码失败，记录解码错误并返回错误。
 	err = s.decoder.Decode(data, out, getResp.KV.ModRevision)
 	if err != nil {
 		recordDecodeError(s.groupResourceString, preparedKey)
@@ -459,6 +476,8 @@ func (s *store) GuaranteedUpdate(
 
 	var origState *objState
 	var origStateIsCurrent bool
+	//尝试使用缓存对象（比如来自 Cacher），否则回退到 etcd 查询。
+	//✅ 先尝试使用缓存加速，失败则下一次回退使用 etcd 最新数据重试。
 	if cachedExistingObject != nil {
 		origState, err = s.getStateFromObject(cachedExistingObject)
 	} else {
@@ -472,6 +491,7 @@ func (s *store) GuaranteedUpdate(
 
 	transformContext := authenticatedDataString(preparedKey)
 	for {
+		// 检查 UID 等是否符合预期
 		if err := preconditions.Check(preparedKey, origState.obj); err != nil {
 			// If our data is already up to date, return the error
 			if origStateIsCurrent {
@@ -488,7 +508,7 @@ func (s *store) GuaranteedUpdate(
 			// Retry
 			continue
 		}
-
+		//根据旧对象调用 tryUpdate 生成新的对象（例如修改 .spec.replicas = 5）。
 		ret, ttl, err := s.updateState(origState, tryUpdate)
 		if err != nil {
 			// If our data is already up to date, return the error
@@ -518,16 +538,19 @@ func (s *store) GuaranteedUpdate(
 		}
 
 		span.AddEvent("About to Encode")
+		//编码新对象为二进制
 		data, err := runtime.Encode(s.codec, ret)
 		if err != nil {
 			span.AddEvent("Encode failed", attribute.Int("len", len(data)), attribute.String("err", err.Error()))
 			return err
 		}
 		span.AddEvent("Encode succeeded", attribute.Int("len", len(data)))
+		//判断新对象和在etcd中的老对象是否一致，也就是是否没有发生变化
 		if !origState.stale && bytes.Equal(data, origState.data) {
 			// if we skipped the original Get in this loop, we must refresh from
 			// etcd in order to be sure the data in the store is equivalent to
 			// our desired serialization
+			//如果用的是缓存里的辅助对象，就去etcd中获取一下新的
 			if !origStateIsCurrent {
 				origState, err = getCurrentState()
 				if err != nil {
@@ -536,6 +559,7 @@ func (s *store) GuaranteedUpdate(
 				origStateIsCurrent = true
 				if !bytes.Equal(data, origState.data) {
 					// original data changed, restart loop
+					//发生了改变，进入下一个循环，避免逻辑复杂
 					continue
 				}
 			}
@@ -549,14 +573,31 @@ func (s *store) GuaranteedUpdate(
 				return nil
 			}
 		}
-
+		//加密/转换为 etcd 存储格式
 		newData, err := s.transformer.TransformToStorage(ctx, data, transformContext)
 		if err != nil {
 			span.AddEvent("TransformToStorage failed", attribute.String("err", err.Error()))
 			return storage.NewInternalError(err)
 		}
 		span.AddEvent("TransformToStorage succeeded")
-
+		//在 etcd 中：
+		//
+		//🧾 Lease 是一种用于关联 TTL 的机制，表示一个带过期时间的租约。
+		//
+		//你可以将某个键（key）绑定到一个 Lease 上，那么当 Lease 过期时，etcd 会自动删除这些 key。它的作用类似 “临时性数据生命周期管理”。
+		//
+		//🔹 举个例子：
+		//bash
+		//复制
+		//编辑
+		//$ etcdctl lease grant 60      # 创建一个60秒的租约
+		//lease 3265b8c1539f33a2 granted with TTL(60s)
+		//$ etcdctl put foo bar --lease=3265b8c1539f33a2
+		//这样，foo=bar 会在 60 秒后自动删除。
+		//如果你在做的是 全量更新（如 PUT 操作） 并且带了 lease，那效果就是：
+		//
+		//✅ 写入成功（绑定了 lease）
+		//⏳ TTL 到期（比如 60 秒）
 		var lease clientv3.LeaseID
 		if ttl != 0 {
 			lease, err = s.leaseManager.GetLease(ctx, int64(ttl))
@@ -567,7 +608,7 @@ func (s *store) GuaranteedUpdate(
 		span.AddEvent("Transaction prepared")
 
 		startTime := time.Now()
-
+		//准备并发起一次带乐观并发控制（CAS）的 etcd 更新请求，并可选附加租约（lease），从而实现对象的版本安全更新与 TTL 控制。
 		txnResp, err := s.client.Kubernetes.OptimisticPut(ctx, preparedKey, newData, origState.rev, kubernetes.PutOptions{
 			GetOnFailure: true,
 			LeaseID:      lease,
@@ -580,6 +621,7 @@ func (s *store) GuaranteedUpdate(
 		span.AddEvent("Txn call completed")
 		span.AddEvent("Transaction committed")
 		if !txnResp.Succeeded {
+			//没更新成功，可能是因为并发导致的冲突，先获取一下etcd中数据，再进入下一轮
 			klog.V(4).Infof("GuaranteedUpdate of %s failed because of a conflict, going to retry", preparedKey)
 			origState, err = s.getState(ctx, txnResp.KV, preparedKey, v, ignoreNotFound, skipTransformDecode)
 			if err != nil {
@@ -730,6 +772,7 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 			return apierrors.NewBadRequest(fmt.Sprintf("invalid continue token: %v", err))
 		}
 	}
+	//withRev, err = s.resolveGetListRev(continueKey, continueRV, opts)：根据 continueKey 获取应当返回的修订版号 withRev。
 	if withRev, err = s.resolveGetListRev(continueKey, continueRV, opts); err != nil {
 		return err
 	}
@@ -753,6 +796,8 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 	}
 
 	aggregator := s.listErrAggrFactory()
+	//：从 etcd 获取数据
+	//通过 s.getList 获取来自 etcd 的数据，直到满足请求的限制条件或没有更多数据。
 	for {
 		startTime := time.Now()
 		getResp, err = s.getList(ctx, keyPrefix, opts.Recursive, kubernetes.ListOptions{
@@ -785,7 +830,15 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 		} else {
 			growSlice(v, 2048, len(getResp.Kvs))
 		}
-
+		//遍历 getResp.Kvs，每个 kv 包含一个键值对。
+		//
+		//调用 s.transformer.TransformFromStorage 对数据进行转换。
+		//
+		//判断当前请求是否已经超时，如果超时则取消当前操作。
+		//
+		//调用 s.decoder.DecodeListItem 对数据进行解码。
+		//
+		//如果解码成功且符合过滤条件（opts.Predicate），将对象添加到结果切片 v 中。
 		// take items from the response until the bucket is full, filtering as we go
 		for i, kv := range getResp.Kvs {
 			if paging && int64(v.Len()) >= opts.Predicate.Limit {
@@ -829,6 +882,7 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 			// free kv early. Long lists can take O(seconds) to decode.
 			getResp.Kvs[i] = nil
 		}
+		//在每次循环结束后，生成新的继续标记（continueKey），并根据需要更新分页的参数。
 		continueKey = string(lastKey) + "\x00"
 
 		// no more results remain or we didn't request paging
@@ -858,7 +912,11 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 		// Ensure that we never return a nil Items pointer in the result for consistency.
 		v.Set(reflect.MakeSlice(v.Type(), 0, 0))
 	}
-
+	//如果分页完成或者没有更多数据，退出循环。
+	//
+	//continueValue, remainingItemCount, err := storage.PrepareContinueToken(...)：生成用于继续分页的标记（continueValue）。
+	//
+	//return s.versioner.UpdateList(listObj, uint64(withRev), continueValue, remainingItemCount)：更新 listObj，包括资源版本、继续标记和剩余项数。
 	continueValue, remainingItemCount, err := storage.PrepareContinueToken(string(lastKey), keyPrefix, withRev, getResp.Count, hasMore, opts)
 	if err != nil {
 		return err
@@ -918,6 +976,7 @@ func growSlice(v reflect.Value, maxCapacity int, sizes ...int) {
 }
 
 // Watch implements storage.Interface.Watch.
+// 直接去etcd的watch走这里
 func (s *store) Watch(ctx context.Context, key string, opts storage.ListOptions) (watch.Interface, error) {
 	preparedKey, err := s.prepareKey(key)
 	if err != nil {
@@ -959,6 +1018,7 @@ func (s *store) getCurrentState(ctx context.Context, key string, v reflect.Value
 // storage will be transformed and decoded.
 // NOTE: when skipTransformDecode is true, the 'data', and the 'obj' fields
 // of the objState will be nil, and 'stale' will be set to true.
+// getState 是 etcd3 存储层从 KeyValue 构造当前对象状态的通用工具函数，支持 decode 与非 decode 两种模式，为 GuaranteedUpdate 提供对比和更新基础。
 func (s *store) getState(ctx context.Context, kv *mvccpb.KeyValue, key string, v reflect.Value, ignoreNotFound bool, skipTransformDecode bool) (*objState, error) {
 	state := &objState{
 		meta: &storage.ResponseMeta{},

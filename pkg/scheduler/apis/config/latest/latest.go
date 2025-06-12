@@ -25,6 +25,7 @@ import (
 
 // Default creates a default configuration of the latest versioned type.
 // This function needs to be updated whenever we bump the scheduler's component config version.
+// 构造一个调度器的默认配置（KubeSchedulerConfiguration）对象，带有默认值，并且已经完成版本转换。
 func Default() (*config.KubeSchedulerConfiguration, error) {
 	versionedCfg := v1.KubeSchedulerConfiguration{}
 	versionedCfg.DebuggingConfiguration = *v1alpha1.NewRecommendedDebuggingConfiguration()

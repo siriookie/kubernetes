@@ -19,6 +19,7 @@ package endpointslice
 import (
 	"context"
 	"fmt"
+	"k8s.io/apimachinery/pkg/types"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -415,6 +416,7 @@ func (c *Controller) syncService(logger klog.Logger, key string) error {
 			"Error listing Pods for Service %s/%s: %v", service.Namespace, service.Name, err)
 		return err
 	}
+	types.NamespacedName{Name: memcached.Name, Namespace: memcached.Namespace}
 	// 根 据 service.Name 和 ControllerName 来 找 出 endpointSlice
 	esLabelSelector := labels.Set(map[string]string{
 		discovery.LabelServiceName: service.Name,

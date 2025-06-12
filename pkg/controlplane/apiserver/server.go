@@ -91,16 +91,20 @@ type Server struct {
 // Certain config fields will be set to a default value if unset.
 // Certain config fields must be specified, including:
 // KubeletClientConfig
+// 基于配置 completedConfig 创建并初始化一个完整的 kube-apiserver（或称 Server）实例，
+// 并将其各种控制器、钩子、OpenAPI 接口、认证机制等按需启动和注册到 GenericAPIServer 上。
 func (c completedConfig) New(name string, delegationTarget genericapiserver.DelegationTarget) (*Server, error) {
+	//创建了一个 GenericAPIServer，这是构建 Kubernetes API Server 的基础结构，封装了 HTTP 服务、认证、授权、审计、中间件注册等核心组件。
 	generic, err := c.Generic.New(name, delegationTarget)
 	if err != nil {
 		return nil, err
 	}
-
+	//如果启用了日志支持功能，则会注册 /logs 路由用于访问容器日志。
 	if c.EnableLogsSupport {
 		routes.Logs{}.Install(generic.Handler.GoRestfulContainer)
 	}
-
+	//如果配置了 ServiceAccountIssuerURL，
+	//则暴露 OIDC Discovery 端点（如：/.well-known/openid-configuration），用于支持 OIDC 格式的 ServiceAccount Token 验证。
 	md, err := serviceaccount.NewOpenIDMetadataProvider(
 		c.ServiceAccountIssuerURL,
 		c.ServiceAccountJWKSURI,
@@ -137,11 +141,14 @@ func (c completedConfig) New(name string, delegationTarget genericapiserver.Dele
 		ClusterAuthenticationInfo: c.ClusterAuthenticationInfo,
 		VersionedInformers:        c.VersionedInformers,
 	}
-
+	//用于控制器与自身 apiserver 通信的 loopback 客户端。
 	client, err := kubernetes.NewForConfig(s.GenericAPIServer.LoopbackClientConfig)
 	if err != nil {
 		return nil, err
 	}
+	//用于确保一些关键系统命名空间（如 kube-system）在 apiserver 启动后被创建出来。
+	//在 Kubernetes 中，除了 kube-controller-manager 中的各种核心 controller（如 DeploymentController、NodeController 等），
+	//kube-apiserver 本身也运行了不少 controller，它们主要用于维护和增强 API Server 的可用性、安全性、以及和其他组件的协作。
 	if len(c.SystemNamespaces) > 0 {
 		s.GenericAPIServer.AddPostStartHookOrDie("start-system-namespaces-controller", func(hookContext genericapiserver.PostStartHookContext) error {
 			go systemnamespaces.NewController(c.SystemNamespaces, client, s.VersionedInformers.Core().V1().Namespaces()).Run(hookContext.Done())
@@ -153,7 +160,7 @@ func (c completedConfig) New(name string, delegationTarget genericapiserver.Dele
 	if err != nil {
 		return nil, fmt.Errorf("failed to get listener address: %w", err)
 	}
-
+	//ZPages 是 Google 提出的调试页面：flagz 显示命令行 flag 状态，statusz 显示状态指标。
 	if utilfeature.DefaultFeatureGate.Enabled(zpagesfeatures.ComponentFlagz) {
 		if c.Generic.Flagz != nil {
 			flagz.Install(s.GenericAPIServer.Handler.NonGoRestfulMux, name, c.Generic.Flagz)
@@ -171,6 +178,7 @@ func (c completedConfig) New(name string, delegationTarget genericapiserver.Dele
 		// and may register informer handlers after they are started.
 		_ = leaseInformer.Informer()
 		_ = lcInformer.Informer()
+		//启动协调式 Leader Election 控制器（可选）
 		s.GenericAPIServer.AddPostStartHookOrDie("start-kube-apiserver-coordinated-leader-election-controller", func(hookContext genericapiserver.PostStartHookContext) error {
 			go leaderelection.RunWithLeaderElection(hookContext, s.GenericAPIServer.LoopbackClientConfig, func() (func(ctx context.Context, workers int), error) {
 				controller, err := leaderelection.NewController(
@@ -192,7 +200,7 @@ func (c completedConfig) New(name string, delegationTarget genericapiserver.Dele
 			return nil
 		})
 	}
-
+	//用于支持 Kubernetes 集群间未知版本的服务发现与代理（如 multi-cluster API proxy）。
 	if utilfeature.DefaultFeatureGate.Enabled(features.UnknownVersionInteroperabilityProxy) {
 		peeraddress := getPeerAddress(c.Extra.PeerAdvertiseAddress, c.Generic.PublicAddress, publicServicePort)
 		peerEndpointCtrl := peerreconcilers.New(
@@ -218,7 +226,7 @@ func (c completedConfig) New(name string, delegationTarget genericapiserver.Dele
 			})
 		}
 	}
-
+	//控制器负责动态维护 clientCA（客户端证书）和 requestHeaderCA 的信任链，并监听其证书变化。
 	s.GenericAPIServer.AddPostStartHookOrDie("start-cluster-authentication-info-controller", func(hookContext genericapiserver.PostStartHookContext) error {
 		controller := clusterauthenticationtrust.NewClusterAuthenticationTrustController(s.ClusterAuthenticationInfo, client)
 		// prime values and start listeners
@@ -246,7 +254,7 @@ func (c completedConfig) New(name string, delegationTarget genericapiserver.Dele
 		go controller.Run(hookContext, 1)
 		return nil
 	})
-
+	//该控制器用于注册 apiserver 的身份 lease 对象，供集群中其他组件（如 controller-manager）感知 apiserver 存活状态。
 	if utilfeature.DefaultFeatureGate.Enabled(apiserverfeatures.APIServerIdentity) {
 		s.GenericAPIServer.AddPostStartHookOrDie("start-kube-apiserver-identity-lease-controller", func(hookContext genericapiserver.PostStartHookContext) error {
 			leaseName := s.GenericAPIServer.APIServerID
@@ -279,11 +287,11 @@ func (c completedConfig) New(name string, delegationTarget genericapiserver.Dele
 			return nil
 		})
 	}
-
+	//确保后端 watch cache（基于 etcd）初始化完成之后，API Server 才被认为是 ready。
 	if utilfeature.DefaultFeatureGate.Enabled(apiserverfeatures.WatchCacheInitializationPostStartHook) {
 		s.GenericAPIServer.AddPostStartHookOrDie("storage-readiness", s.GenericAPIServer.StorageReadinessHook.Hook)
 	}
-
+	//用于追踪和管理已废弃的 serviceaccount token 等老旧认证凭证。
 	s.GenericAPIServer.AddPostStartHookOrDie("start-legacy-token-tracking-controller", func(hookContext genericapiserver.PostStartHookContext) error {
 		go legacytokentracking.NewController(client).Run(hookContext.Done())
 		return nil

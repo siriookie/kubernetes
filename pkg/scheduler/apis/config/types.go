@@ -67,6 +67,17 @@ type KubeSchedulerConfiguration struct {
 	// then scheduler stops finding further feasible nodes once it finds 150 feasible ones.
 	// When the value is 0, default percentage (5%--50% based on the size of the cluster) of the
 	// nodes will be scored. It is overridden by profile level PercentageOfNodesToScore.
+	//在调度一个 Pod 时，调度器需要从所有 Node 中选一个最合适的。
+	//
+	//这个过程包括两个阶段：
+	//
+	//Filter 阶段：过滤掉不符合要求的节点。
+	//
+	//Score 阶段：对剩下的节点打分，找出分数最高的节点。
+	//
+	//如果集群中有成千上万的节点，那么对所有节点打分的成本就很高，所以调度器就引入了：
+	//
+	//percentageOfNodesToScore：只对部分节点打分，节省调度时间。
 	PercentageOfNodesToScore *int32
 
 	// PodInitialBackoffSeconds is the initial backoff for unschedulable pods.

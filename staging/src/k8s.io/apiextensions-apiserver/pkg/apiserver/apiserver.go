@@ -128,7 +128,9 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	if err != nil {
 		return nil, err
 	}
-
+	//这段代码创建了一个信号通道 hasCRDInformerSyncedSignal，用于同步 CRD 的 informer 是否已经完全同步。
+	//RegisterMuxAndDiscoveryCompleteSignal 方法将这个信号注册到 genericServer，确保在 informer 同步完成之前，
+	//API Server 不会处理 CustomResource 请求。这样可以防止在数据尚未准备好时返回错误的响应。
 	// hasCRDInformerSyncedSignal is closed when the CRD informer this server uses has been fully synchronized.
 	// It ensures that requests to potential custom resource endpoints while the server hasn't installed all known HTTP paths get a 503 error instead of a 404
 	hasCRDInformerSyncedSignal := make(chan struct{})
@@ -144,7 +146,9 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(apiextensions.GroupName, Scheme, metav1.ParameterCodec, Codecs)
 	storage := map[string]rest.Storage{}
 	// customresourcedefinitions
+	//设置 CRD 存储。这部分代码首先检查是否启用了 customresourcedefinitions 资源。如果启用了，它会为该资源创建存储接口。存储接口用于处理 CRD 的增、删、改、查等操作。
 	if resource := "customresourcedefinitions"; apiResourceConfig.ResourceEnabled(v1.SchemeGroupVersion.WithResource(resource)) {
+		//customresourcedefinition.NewREST 和 customresourcedefinition.NewStatusREST 用于创建 REST 存储实例，用于 CRD 的创建和状态管理
 		customResourceDefinitionStorage, err := customresourcedefinition.NewREST(Scheme, c.GenericConfig.RESTOptionsGetter)
 		if err != nil {
 			return nil, err
@@ -159,7 +163,9 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	if err := s.GenericAPIServer.InstallAPIGroup(&apiGroupInfo); err != nil {
 		return nil, err
 	}
-
+	//这里创建了一个 crdClient，用于与 Kubernetes API Server 进行通信。
+	//接着通过 externalinformers.NewSharedInformerFactory 创建了一个共享的 informer 工厂，
+	//专门用于 CRD 对象的同步。Informers 会定期从 API Server 中拉取最新的数据，并保持本地缓存同步。
 	crdClient, err := clientset.NewForConfig(s.GenericAPIServer.LoopbackClientConfig)
 	if err != nil {
 		// it's really bad that this is leaking here, but until we can fix the test (which I'm pretty sure isn't even testing what it wants to test),
@@ -182,6 +188,7 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		delegate:  delegateHandler,
 	}
 	establishingController := establish.NewEstablishingController(s.Informers.Apiextensions().V1().CustomResourceDefinitions(), crdClient.ApiextensionsV1())
+	//这里创建了一个 CRD 处理器（crdHandler），它将处理所有 CRD 相关的请求。接着将它注册到 genericServer 的 HTTP 路由中，这样所有 /apis 和 /apis/{version} 路径下的 CRD 请求都会由这个处理器处理。
 	crdHandler, err := NewCustomResourceDefinitionHandler(
 		versionDiscoveryHandler,
 		groupDiscoveryHandler,
@@ -210,6 +217,15 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	if aggregatedDiscoveryManager != nil {
 		aggregatedDiscoveryManager = aggregatedDiscoveryManager.WithSource(aggregated.CRDSource)
 	}
+	//作用：创建了多个控制器，用于处理不同的 CRD 相关操作。例如：
+	//
+	//Discovery Controller：处理 CRD 的版本和分组发现。
+	//
+	//Naming Controller：管理 CRD 的命名条件。
+	//
+	//Finalizer Controller：用于处理 CRD 对象的 finalizer。
+	//
+	//API Approval Controller：确保 CRD API 的一致性和合规性。
 	discoveryController := NewDiscoveryController(s.Informers.Apiextensions().V1().CustomResourceDefinitions(), versionDiscoveryHandler, groupDiscoveryHandler, aggregatedDiscoveryManager)
 	namingController := status.NewNamingConditionController(s.Informers.Apiextensions().V1().CustomResourceDefinitions(), crdClient.ApiextensionsV1())
 	nonStructuralSchemaController := nonstructuralschema.NewConditionController(s.Informers.Apiextensions().V1().CustomResourceDefinitions(), crdClient.ApiextensionsV1())

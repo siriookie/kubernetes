@@ -133,6 +133,15 @@ func PatchResource(r rest.Patcher, scope *RequestScope, admit admission.Interfac
 		audit.LogRequestPatch(req.Context(), patchBytes)
 		span.AddEvent("Recorded the audit event")
 
+		//K8s 支持的 PATCH 类型包括：
+		//
+		//application/json-patch+json
+		//
+		//application/merge-patch+json
+		//
+		//application/apply-patch+yaml
+		//
+		//application/apply-patch+cbor
 		var baseContentType string
 		switch patchType {
 		case types.ApplyYAMLPatchType:
@@ -171,6 +180,7 @@ func PatchResource(r rest.Patcher, scope *RequestScope, admit admission.Interfac
 		)
 
 		userInfo, _ := request.UserFrom(ctx)
+		//用来提供给准入控制器（Admission Controller）的上下文数据，如用户信息、namespace、资源类型、操作类型等。
 		staticCreateAttributes := admission.NewAttributesRecord(
 			nil,
 			nil,
@@ -650,6 +660,7 @@ func (p *patcher) applyAdmission(ctx context.Context, patchedObject runtime.Obje
 }
 
 // patchResource divides PatchResource for easier unit testing
+// 根据 patch 类型选择处理机制 → 构造 patch 应用链 → 应用 patch → 运行 admission → 执行 Update / Create（如果允许创建）→ 返回最终对象
 func (p *patcher) patchResource(ctx context.Context, scope *RequestScope) (runtime.Object, bool, error) {
 	p.namespace = request.NamespaceValue(ctx)
 	switch p.patchType {
@@ -668,6 +679,12 @@ func (p *patcher) patchResource(ctx context.Context, scope *RequestScope) (runti
 			schemaReferenceObj: schemaReferenceObj,
 			fieldManager:       scope.FieldManager,
 		}
+
+	//JSONPatchType / MergePatchType: 使用 JSON patcher
+	//
+	//StrategicMergePatchType: 使用 SMP patcher，需要 reference schema
+	//
+	//ApplyYAMLPatchType / ApplyCBORPatchType: 使用 Server Side Apply 的 patcher，允许创建新对象（forceAllowCreate = true）
 	// this case is unreachable if ServerSideApply is not enabled because we will have already rejected the content type
 	case types.ApplyYAMLPatchType:
 		p.mechanism = newApplyPatcher(p, scope.FieldManager, yaml.Unmarshal, yaml.UnmarshalStrict)
@@ -688,16 +705,26 @@ func (p *patcher) patchResource(ctx context.Context, scope *RequestScope) (runti
 	default:
 		return nil, false, fmt.Errorf("%v: unimplemented patch type", p.patchType)
 	}
+	//一个 transformer，用于在 patch 应用后去重 ownerReferences，避免 owner 列表里有重复项。
 	dedupOwnerReferencesTransformer := func(_ context.Context, obj, _ runtime.Object) (runtime.Object, error) {
 		// Dedup owner references after mutating admission happens
 		dedupOwnerReferencesAndAddWarning(obj, ctx, true)
 		return obj, nil
 	}
-
+	//这组函数链会依次对资源对象进行处理：
+	//
+	//applyPatch: 将 patch 应用到原始对象
+	//
+	//applyAdmission: 运行 mutating admission
+	//
+	//dedupOwnerReferencesTransformer: 去重 ownerReferences
 	transformers := []rest.TransformFunc{p.applyPatch, p.applyAdmission, dedupOwnerReferencesTransformer}
 
 	wasCreated := false
 	p.updatedObjectInfo = rest.DefaultUpdatedObjectInfo(nil, transformers...)
+	//调用 RESTStorage.Update() 实际执行 etcd 中的更新操作：
+	//如果 forceAllowCreate = true，则 Update 时对象不存在也可以 Create。
+	//admission 验证、field 管理也会在此过程中触发。
 	requestFunc := func() (runtime.Object, error) {
 		// Pass in UpdateOptions to override UpdateStrategy.AllowUpdateOnCreate
 		options := patchToUpdateOptions(p.options)
@@ -705,6 +732,7 @@ func (p *patcher) patchResource(ctx context.Context, scope *RequestScope) (runti
 		wasCreated = created
 		return updateObject, updateErr
 	}
+	//如果遇到资源序列化后体积太大（比如 managedFields 导致），会重试一遍 patch，但去掉 managedFields 字段。
 	result, err := finisher.FinishRequest(ctx, func() (runtime.Object, error) {
 
 		result, err := requestFunc()

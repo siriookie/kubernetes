@@ -47,7 +47,11 @@ type APIVersionHandler struct {
 	apiResourceLister APIResourceLister
 }
 
-func NewAPIVersionHandler(serializer runtime.NegotiatedSerializer, groupVersion schema.GroupVersion, apiResourceLister APIResourceLister) *APIVersionHandler {
+func NewAPIVersionHandler(
+	serializer runtime.NegotiatedSerializer, // 序列化协议选择器（支持 JSON、protobuf 等）
+	groupVersion schema.GroupVersion, // 当前处理的 group/version（例如 apps/v1）
+	apiResourceLister APIResourceLister, // 列出该版本下的资源列表
+) *APIVersionHandler {
 	if keepUnversioned(groupVersion.Group) {
 		// Because in release 1.1, /apis/extensions returns response with empty
 		// APIVersion, we use stripVersionNegotiatedSerializer to keep the

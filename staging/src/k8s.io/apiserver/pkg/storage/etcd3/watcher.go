@@ -120,6 +120,14 @@ func (w *watcher) Watch(ctx context.Context, key string, rev int64, opts storage
 	// is by default enabled for all resources but Events), we just deliver
 	// the initialization signal immediately. Improving this will be explored
 	// in the future.
+	//这段注释解释了为什么需要在 watch 请求初始化时发送信号。在 etcd 的 watch 中，
+	//没有直接的方法可以判断某个 watch 请求是否已经追赶上了数据。因为 watchcache 默认开启
+	//除了事件（Events）外，所有资源都会缓存，所以在初始化时，直接发送初始化信号。这种实现方式将来可能会被改进。
+	//WatchInitialized 函数的作用是向优先级和公平性调度器发送信号，表示某个 watch 请求已经完成初始化。
+	//
+	//initializationSignalFrom(ctx)：尝试从上下文 ctx 中提取一个初始化信号。如果上下文中包含有效的初始化信号（通过 initializationSignalFrom 函数），signal 会被赋值，并且 ok 为 true。
+	//
+	//signal.Signal()：如果成功提取到信号，就调用 Signal() 方法来触发信号。这个信号会通知调度器，表示某个 watch 请求已经初始化完成，可以继续其他操作。
 	utilflowcontrol.WatchInitialized(ctx)
 
 	return wc, nil
@@ -231,10 +239,16 @@ func (wc *watchChan) run(initialEventsEndBookmarkRequired, forceInitialEvents bo
 	go wc.startWatching(watchClosedCh, initialEventsEndBookmarkRequired, forceInitialEvents)
 
 	var resultChanWG sync.WaitGroup
+	// 处理从etcd收到的event，发送到result channel
 	wc.processEvents(&resultChanWG)
 
 	select {
 	case err := <-wc.errChan:
+		//如果从 wc.errChan 通道接收到一个错误，那么就会进入该分支。
+		//
+		//isCancelError(err) 检查是否是取消错误，如果是取消错误，直接跳出 select，不做任何处理。
+		//
+		//如果不是取消错误，将错误转换成 errResult，然后将其发送到 wc.resultChan 中，除非 wc.ctx.Done() 被调用，表示用户取消操作。
 		if isCancelError(err) {
 			break
 		}
@@ -247,15 +261,18 @@ func (wc *watchChan) run(initialEventsEndBookmarkRequired, forceInitialEvents bo
 			}
 		}
 	case <-watchClosedCh:
+		//这个分支会在 watchClosedCh 通道关闭时执行，即 startWatching 方法完成后关闭通道时会触发。
 	case <-wc.ctx.Done(): // user cancel
+		//如果 wc.ctx.Done() 被调用，表示上下文取消，用户已取消所有操作，此时会退出 select。
 	}
 
 	// We use wc.ctx to reap all goroutines. Under whatever condition, we should stop them all.
 	// It's fine to double cancel.
 	wc.cancel()
-
+	//调用 Wait() 来等待 resultChanWG 中的所有 goroutine 完成处理事件。一旦所有事件处理完毕，resultChan 可以安全地关闭。
 	// we need to wait until resultChan wouldn't be used anymore
 	resultChanWG.Wait()
+	//关闭 wc.resultChan 通道，表示不再向 resultChan 发送事件。
 	close(wc.resultChan)
 }
 
@@ -291,7 +308,7 @@ func (wc *watchChan) sync() error {
 	if wc.recursive {
 		metricsOp = "list"
 	}
-
+	//准备请求的键（preparedKey）：定义了一个变量 preparedKey，初始化为 wc.key，用于存储查询的键。
 	preparedKey := wc.key
 
 	for {
@@ -309,6 +326,7 @@ func (wc *watchChan) sync() error {
 		// send items from the response until no more results
 		for i, kv := range getResp.Kvs {
 			lastKey = kv.Key
+			//对于每一项返回的键值对（kv），会发送解析后的事件（wc.sendEvent(parseKV(kv))），同时将当前的 kv 从响应中移除，释放内存。
 			wc.sendEvent(parseKV(kv))
 			// free kv early. Long lists can take O(seconds) to decode.
 			getResp.Kvs[i] = nil
@@ -317,7 +335,12 @@ func (wc *watchChan) sync() error {
 		if withRev == 0 {
 			wc.initialRev = getResp.Header.Revision
 		}
-
+		//判断是否还有更多结果：
+		//
+		//如果 getResp.More 为 false，表示没有更多结果，退出循环。
+		//
+		//如果 getResp.More 为 true，表示还有更多数据，继续请求下一批数据，
+		//设置新的查询键 preparedKey（将当前的 lastKey 加上一个特殊的字节 \x00，用于获取大于当前 lastKey 的数据）和修订版本 withRev。
 		// no more results remain
 		if !getResp.More {
 			return nil
@@ -360,6 +383,8 @@ func logWatchChannelErr(err error) {
 // preferences for delivering bookmark events.
 func (wc *watchChan) startWatching(watchClosedCh chan struct{}, initialEventsEndBookmarkRequired, forceInitialEvents bool) {
 	if wc.initialRev > 0 && forceInitialEvents {
+		//果 forceInitialEvents 为 true，该方法会在开始监听之前，通过 getCurrentStorageRV 方法获取当前存储版本（revision），
+		//并与 initialRev 进行比较。如果 initialRev 大于当前版本，会返回错误。
 		currentStorageRV, err := wc.watcher.getCurrentStorageRV(wc.ctx)
 		if err != nil {
 			wc.sendError(err)
@@ -371,12 +396,15 @@ func (wc *watchChan) startWatching(watchClosedCh chan struct{}, initialEventsEnd
 		}
 	}
 	if forceInitialEvents {
+		//：如果 forceInitialEvents 为 true，会调用 sync() 方法进行同步，
+		//然后发送初始事件。initialEventsEndBookmarkRequired 为 true 时，还会发送一个“进度通知事件”，表示初始事件已经发送完毕。
 		if err := wc.sync(); err != nil {
 			klog.Errorf("failed to sync with latest state: %v", err)
 			wc.sendError(err)
 			return
 		}
 	}
+	//initialEventsEndBookmarkRequired 为 true 时，还会发送一个“进度通知事件”，表示初始事件已经发送完毕。
 	if initialEventsEndBookmarkRequired {
 		wc.sendEvent(func() *event {
 			e := progressNotifyEvent(wc.initialRev)
@@ -391,6 +419,7 @@ func (wc *watchChan) startWatching(watchClosedCh chan struct{}, initialEventsEnd
 	if wc.progressNotify {
 		opts = append(opts, clientv3.WithProgressNotify())
 	}
+	//通过调用 watcher.client.Watch 方法开始监听指定的 key（通常是一个存储键）。监听结果会通过 wch 通道接收。
 	wch := wc.watcher.client.Watch(wc.ctx, wc.key, opts...)
 	for wres := range wch {
 		if wres.Err() != nil {
@@ -401,12 +430,14 @@ func (wc *watchChan) startWatching(watchClosedCh chan struct{}, initialEventsEnd
 			return
 		}
 		if wres.IsProgressNotify() {
+			//如果返回的是 progressNotify 事件，表示存储系统（如 etcd）进度更新，此时会调用 wc.sendEvent 发送事件，并记录进度。
 			wc.sendEvent(progressNotifyEvent(wres.Header.GetRevision()))
 			metrics.RecordEtcdBookmark(wc.watcher.groupResource.String())
 			continue
 		}
 
 		for _, e := range wres.Events {
+			//如果返回的是数据更新事件（wres.Events），则会解析这些事件并调用 wc.sendEvent 发送解析后的事件。
 			metrics.RecordEtcdEvent(wc.watcher.groupResource.String())
 			parsedEvent, err := parseEvent(e)
 			if err != nil {
@@ -421,15 +452,19 @@ func (wc *watchChan) startWatching(watchClosedCh chan struct{}, initialEventsEnd
 	// e.g. cancel the context, close the client.
 	// If this watch chan is broken and context isn't cancelled, other goroutines will still hang.
 	// We should notify the main thread that this goroutine has exited.
+	//关闭 Watch 通道：当监听结束时，会关闭 watchClosedCh 通道，通知主线程监听已经结束。
 	close(watchClosedCh)
 }
 
 // processEvents processes events from etcd watcher and sends results to resultChan.
 func (wc *watchChan) processEvents(wg *sync.WaitGroup) {
 	if utilfeature.DefaultFeatureGate.Enabled(features.ConcurrentWatchObjectDecode) {
+		//如果 ConcurrentWatchObjectDecode 特性开启，那么会调用 wc.concurrentProcessEvents(wg) 方法来并发地处理事件。
+		//concurrentProcessEvents 可能会启动多个 goroutine 来同时处理来自 etcd watcher 的事件，通常是通过并发解码和处理事件来提高效率。
 		wc.concurrentProcessEvents(wg)
 	} else {
 		wg.Add(1)
+		//执行串行处理事件的代码。
 		go wc.serialProcessEvents(wg)
 	}
 }

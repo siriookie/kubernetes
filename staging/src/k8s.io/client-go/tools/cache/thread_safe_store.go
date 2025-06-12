@@ -274,9 +274,13 @@ func (i *storeIndex) deleteKeyFromIndex(key, indexValue string, index Index) {
 // 内存占用	⭐️ 较低	较高（维护两份数据）
 // threadSafeMap implements ThreadSafeStore
 type threadSafeMap struct {
-	lock  sync.RWMutex
+	lock sync.RWMutex
+	//items["default/pod-1"] = &Pod{
+	//    Name:      "pod-1",
+	//    Namespace: "default",
+	//    Containers: []Container{ /* ... */ },
+	//}
 	items map[string]interface{}
-
 	// index implements the indexing functionality
 	index *storeIndex
 }

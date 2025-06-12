@@ -412,6 +412,7 @@ func (w *watchCache) List() []interface{} {
 // waitUntilFreshAndBlock waits until cache is at least as fresh as given <resourceVersion>.
 // NOTE: This function acquired lock and doesn't release it.
 // You HAVE TO explicitly call w.RUnlock() after this function.
+// 这个方法会阻塞直到缓存中的数据变得新鲜，即缓存数据的 resourceVersion 满足条件。
 func (w *watchCache) waitUntilFreshAndBlock(ctx context.Context, resourceVersion uint64) error {
 	startTime := w.clock.Now()
 	defer func() {
@@ -527,6 +528,7 @@ func filterPrefixAndOrder(prefix string, items []interface{}) ([]interface{}, er
 	return result, nil
 }
 
+// 检查当前的缓存是否足够新。如果缓存的 resourceVersion 小于请求的版本号，说明数据还不够新。
 func (w *watchCache) notFresh(resourceVersion uint64) bool {
 	w.RLock()
 	defer w.RUnlock()
@@ -711,8 +713,10 @@ func (w *watchCache) isIndexValidLocked(index int) bool {
 // retrieve events since a certain resourceVersion. This function assumes to
 // be called under the watchCache lock.
 func (w *watchCache) getAllEventsSinceLocked(resourceVersion uint64, key string, opts storage.ListOptions) (*watchCacheInterval, error) {
+	//这用于后面判断是否可以直接从 store 拿初始对象状态（而不是从 cache）。
 	_, matchesSingle := opts.Predicate.MatchesSingle()
 	matchesSingle = matchesSingle && !opts.Recursive
+	//如果需要发送初始对象状态（比如第一次 watch），直接调用 getIntervalFromStoreLocked，该方法会从底层 store 拿数据，而不是 cache。
 	if opts.SendInitialEvents != nil && *opts.SendInitialEvents {
 		return w.getIntervalFromStoreLocked(key, matchesSingle)
 	}

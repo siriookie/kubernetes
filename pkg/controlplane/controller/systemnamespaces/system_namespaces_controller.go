@@ -58,6 +58,7 @@ func NewController(systemNamespaces []string, clientset kubernetes.Interface, na
 	}
 }
 
+// System Namespaces Controller不是一个长期运行、一直在循环处理的 controller，它的职责更像是一个初始化确保器（initializer）。
 // Run starts one worker.
 func (c *Controller) Run(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()

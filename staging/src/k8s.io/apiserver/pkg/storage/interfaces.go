@@ -196,6 +196,24 @@ type Interface interface {
 	// Treats empty responses and nil response nodes exactly like a not found error.
 	// The returned contents may be delayed, but it is guaranteed that they will
 	// match 'opts.ResourceVersion' according 'opts.ResourceVersionMatch'.
+	//具体是否走进 Cacher.Get 的条件：
+	//API Server 中对应资源的存储层是否启用了 Cacher。
+	//
+	//通常情况下，常见资源（比如 Pod、Node、Deployment 等）都启用了 Cacher，所以这些资源的 GET 请求通常会走进这段代码。
+	//
+	//一些少用资源或自定义资源（CRD）可能没有启用 Cacher，它们的 GET 请求会直接走底层的 etcd3 存储实现。
+	//
+	//请求是否指定了 resourceVersion。
+	//
+	//如果请求没有指定 resourceVersion，默认是走底层存储（c.storage.Get）。
+	//
+	//如果指定了 resourceVersion，才有可能走缓存。
+	//
+	//特性开关 ResilientWatchCacheInitialization 是否开启。
+	//
+	//如果该特性开启，且缓存还未初始化，也会退回到底层存储。
+	//
+	//如果该特性未开启，API Server 会等待缓存准备好后再访问缓存（c.ready.wait）。
 	Get(ctx context.Context, key string, opts GetOptions, objPtr runtime.Object) error
 
 	// GetList unmarshalls objects found at key into a *List api object (an object
@@ -240,7 +258,7 @@ type Interface interface {
 	// )
 	GuaranteedUpdate(
 		ctx context.Context, key string, destination runtime.Object, ignoreNotFound bool,
-		preconditions *Preconditions, tryUpdate UpdateFunc, cachedExistingObject runtime.Object) error
+		preconditions *Preconditions, tryUpdate UpdateFunc, cachedExistingObject runtime.Object) error // cachedExistingObject 可选的 "当前对象建议值"
 
 	// Count returns number of different entries under the key (generally being path prefix).
 	Count(key string) (int64, error)

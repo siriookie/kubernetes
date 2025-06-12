@@ -562,6 +562,59 @@ func (e *Store) create(ctx context.Context, obj runtime.Object, createValidation
 // It checks if the new object has no finalizers,
 // the existing object's deletionTimestamp is set, and
 // the existing object's deletionGracePeriodSeconds is 0 or nil
+// 比如有个资源（例如自定义资源 CRD、Pod、Namespace 等）设置了 finalizers，这个资源被用户删除后：
+//
+// 🧾 第一步：用户执行 delete 命令
+// bash
+// 复制
+// 编辑
+// kubectl delete myresource foo
+// API Server 设置 metadata.deletionTimestamp
+//
+// 但不删除 etcd 里的对象，因为还有 finalizers。
+//
+// yaml
+// 复制
+// 编辑
+// metadata:
+//
+//	deletionTimestamp: 2025-05-07T08:00:00Z
+//	finalizers:
+//	  - example.com/my-cleanup
+//
+// 🔁 第二步：ControllerManager 里的某个控制器开始处理
+// Controller 的 Reconciler 检测到：
+//
+// 对象已经进入删除流程（deletionTimestamp 不为空）
+//
+// 它还有自己设置的 finalizer（说明 cleanup 工作还没完成）
+//
+// 于是 controller：
+//
+// ✅ 执行自己的清理逻辑（如删除云资源、断开连接等）
+//
+// ✅ 最后调用 client.Update(ctx, obj)，把 finalizers 清空：
+//
+// go
+// 复制
+// 编辑
+// obj.SetFinalizers(nil)
+// client.Update(ctx, obj)
+// ✅ 第三步：Update 时触发 ShouldDeleteDuringUpdate
+// 进入你刚问的判断逻辑：
+//
+// newObj.finalizers 是空的 ✅
+//
+// existingObj.deletionTimestamp 已设置 ✅
+//
+// deletionGracePeriodSeconds == nil || == 0 ✅
+//
+// 所以进入 delete during update 流程
+//
+// 返回 errEmptiedFinalizers，触发真正删除
+//
+// ✅总结一句话：
+// 是的，controller manager（即某个 controller）调用 Update 清空 finalizer 时，进入了 ShouldDeleteDuringUpdate() 的判断，从而完成最终删除动作。
 func ShouldDeleteDuringUpdate(ctx context.Context, key string, obj, existing runtime.Object) bool {
 	newMeta, err := meta.Accessor(obj)
 	if err != nil {
@@ -595,6 +648,11 @@ func (e *Store) deleteWithoutFinalizers(ctx context.Context, name, key string, o
 		// Deletion is racy, i.e., there could be multiple update
 		// requests to remove all finalizers from the object, so we
 		// ignore the NotFound error.
+		//多个 controller 并发清除 finalizers 是允许的，所以如果这个 controller 触发 delete 时对象已经不在 etcd 了，就：
+		//
+		//调用 finalizeDelete() 执行尾部收尾逻辑（如发送 Event）
+		//
+		//返回原对象（即便 etcd 没有了，仍给客户端一个 "成功"）
 		if storage.IsNotFound(err) {
 			_, err := e.finalizeDelete(ctx, obj, true, options)
 			// clients are expecting an updated object if a PUT succeeded,
@@ -604,6 +662,13 @@ func (e *Store) deleteWithoutFinalizers(ctx context.Context, name, key string, o
 		}
 		return nil, false, storeerr.InterpretDeleteError(err, e.qualifiedResourceFromContext(ctx), name)
 	}
+	//finalizeDelete() 是清理工作：
+	//
+	//发出 Event
+	//
+	//记录审计日志
+	//
+	//调用 admission webhook 的 delete 子流程（如果还注册了）
 	_, err := e.finalizeDelete(ctx, out, true, options)
 	// clients are expecting an updated object if a PUT succeeded, but
 	// finalizeDelete returns a metav1.Status, so return the object in
@@ -614,7 +679,16 @@ func (e *Store) deleteWithoutFinalizers(ctx context.Context, name, key string, o
 // Update performs an atomic update and set of the object. Returns the result of the update
 // or an error. If the registry allows create-on-update, the create flow will be executed.
 // A bool is returned along with the object and any errors, to indicate object creation.
-func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, forceAllowCreate bool, options *metav1.UpdateOptions) (runtime.Object, bool, error) {
+func (e *Store) Update(
+	ctx context.Context,
+	name string,
+	objInfo rest.UpdatedObjectInfo, // 提供新旧对象转换逻辑
+	createValidation rest.ValidateObjectFunc, // 创建时的校验函数
+	updateValidation rest.ValidateObjectUpdateFunc, // 更新时的校验函数
+	forceAllowCreate bool, // 是否强制允许创建（如kubectl apply --force）
+	options *metav1.UpdateOptions, // 更新选项（如DryRun）
+) (runtime.Object, bool, error) {
+	//生成 key（即 etcd 中的 key）：
 	key, err := e.KeyFunc(ctx, name)
 	if err != nil {
 		return nil, false, err
@@ -635,11 +709,14 @@ func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 	out := e.NewFunc()
 	// deleteObj is only used in case a deletion is carried out
 	var deleteObj runtime.Object
+	//这是整个流程的关键，原子更新,其中的 updateFunc 会被反复执行直到更新成功或失败。
 	err = e.Storage.GuaranteedUpdate(ctx, key, out, true, storagePreconditions, func(existing runtime.Object, res storage.ResponseMeta) (runtime.Object, *uint64, error) {
 		existingResourceVersion, err := e.Storage.Versioner().ObjectResourceVersion(existing)
 		if err != nil {
 			return nil, nil, err
 		}
+		//如果旧对象不存在（ResourceVersion == 0）
+		//检查是否允许 Create-on-Update：
 		if existingResourceVersion == 0 {
 			if !e.UpdateStrategy.AllowCreateOnUpdate() && !forceAllowCreate {
 				return nil, nil, apierrors.NewNotFound(qualifiedResource, name)
@@ -647,6 +724,7 @@ func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 		}
 
 		// Given the existing object, get the new object
+		//创建新的obj
 		obj, err := objInfo.UpdatedObject(ctx, existing)
 		if err != nil {
 			return nil, nil, err
@@ -660,13 +738,15 @@ func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 		if err != nil {
 			return nil, nil, err
 		}
+		//判断是否是 unconditional update（没有 RV 且允许）
 		doUnconditionalUpdate := newResourceVersion == 0 && e.UpdateStrategy.AllowUnconditionalUpdate()
-
+		//场景1：对象不存在（创建逻辑）
 		if existingResourceVersion == 0 {
 			// Init metadata as early as possible.
 			if objectMeta, err := meta.Accessor(obj); err != nil {
 				return nil, nil, err
 			} else {
+				// 填充元数据（如CreationTimestamp）
 				rest.FillObjectMetaSystemFields(objectMeta)
 			}
 
@@ -685,16 +765,19 @@ func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 
 			creating = true
 			creatingObj = obj
+			// 调用创建策略钩子
 			if err := rest.BeforeCreate(e.CreateStrategy, ctx, obj); err != nil {
 				return nil, nil, err
 			}
 			// at this point we have a fully formed object.  It is time to call the validators that the apiserver
 			// handling chain wants to enforce.
+			// 执行创建校验
 			if createValidation != nil {
 				if err := createValidation(ctx, obj.DeepCopyObject()); err != nil {
 					return nil, nil, err
 				}
 			}
+			// 计算TTL
 			ttl, err := e.calculateTTL(obj, 0, false)
 			if err != nil {
 				return nil, nil, err
@@ -706,9 +789,9 @@ func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 			finishCreate = finishNothing
 			fn(ctx, true)
 
-			return obj, &ttl, nil
+			return obj, &ttl, nil // 此处的 obj 会被存储层写入（如 ETCD 的 PUT 操作）
 		}
-
+		//场景2：对象存在（更新逻辑）
 		creating = false
 		creatingObj = nil
 		if doUnconditionalUpdate {
@@ -729,6 +812,7 @@ func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 				fieldErrList := field.ErrorList{field.Invalid(field.NewPath("metadata").Child("resourceVersion"), newResourceVersion, "must be specified for an update")}
 				return nil, nil, apierrors.NewInvalid(qualifiedKind, name, fieldErrList)
 			}
+			// 检查资源版本冲突
 			if newResourceVersion != existingResourceVersion {
 				return nil, nil, apierrors.NewConflict(qualifiedResource, name, fmt.Errorf(OptimisticLockErrorMsg))
 			}
@@ -767,6 +851,7 @@ func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 			}
 		}
 		// Check the default delete-during-update conditions, and store-specific conditions if provided
+		//当对象的 finalizers 被清空时，触发删除流程（如 kubectl delete 的最终清理阶段）。
 		if ShouldDeleteDuringUpdate(ctx, key, obj, existing) &&
 			(e.ShouldDeleteDuringUpdate == nil || e.ShouldDeleteDuringUpdate(ctx, key, obj, existing)) {
 			deleteObj = obj
@@ -791,6 +876,7 @@ func (e *Store) Update(ctx context.Context, name string, objInfo rest.UpdatedObj
 
 	if err != nil {
 		// delete the object
+		//如果遇到 errEmptiedFinalizers 错误，说明需要删除对象：
 		if err == errEmptiedFinalizers {
 			return e.deleteWithoutFinalizers(ctx, name, key, deleteObj, storagePreconditions, newDeleteOptionsFromUpdateOptions(options))
 		}
@@ -970,6 +1056,9 @@ func shouldDeleteDependents(ctx context.Context, e *Store, accessor metav1.Objec
 // The finalizers returned are intended to be handled by the garbage collector.
 // If garbage collection is disabled for the store, this function returns false
 // to ensure finalizers aren't set which will never be cleared.
+// 这段代码的核心逻辑是判断是否需要为对象添加与垃圾回收相关的 finalizer。如果需要，
+// 它会根据删除选项和对象的状态，决定是孤立依赖对象、删除依赖对象，还是保留原有的 finalizer 列表。
+// 最终，如果 finalizer 列表发生变化，它会返回 true 和新的 finalizer 列表，供后续操作使用。
 func deletionFinalizersForGarbageCollection(ctx context.Context, e *Store, accessor metav1.Object, options *metav1.DeleteOptions) (bool, []string) {
 	if !e.EnableGarbageCollection {
 		return false, []string{}
@@ -1132,11 +1221,13 @@ func (e *Store) Delete(ctx context.Context, name string, deleteValidation rest.V
 	}
 	obj := e.NewFunc()
 	qualifiedResource := e.qualifiedResourceFromContext(ctx)
+	//如果对象不存在（NotFound 错误），就转换成 Kubernetes 风格的错误返回。
 	if err = e.Storage.Get(ctx, key, storage.GetOptions{}, obj); err != nil {
 		return nil, false, storeerr.InterpretDeleteError(err, qualifiedResource, name)
 	}
 
 	// support older consumers of delete by treating "nil" as delete immediately
+	//这兼容旧客户端，如果没传 DeleteOptions，则默认直接删除。
 	if options == nil {
 		options = metav1.NewDeleteOptions(0)
 	}
@@ -1145,11 +1236,14 @@ func (e *Store) Delete(ctx context.Context, name string, deleteValidation rest.V
 		preconditions.UID = options.Preconditions.UID
 		preconditions.ResourceVersion = options.Preconditions.ResourceVersion
 	}
+	//判断是否支持优雅删除（graceful deletion），比如 Pod 会设置一个 TerminationGracePeriod。
+	//也可能发现删除已经是“挂起删除”状态（pending graceful deletion）。
 	graceful, pendingGraceful, err := rest.BeforeDelete(e.DeleteStrategy, ctx, obj, options)
 	if err != nil {
 		return nil, false, err
 	}
 	// this means finalizers cannot be updated via DeleteOptions if a deletion is already pending
+	//正在删了，不要问。直接返回
 	if pendingGraceful {
 		out, err := e.finalizeDelete(ctx, obj, false, options)
 		return out, false, err
@@ -1166,9 +1260,14 @@ func (e *Store) Delete(ctx context.Context, name string, deleteValidation rest.V
 
 	// Handle combinations of graceful deletion and finalization by issuing
 	// the correct updates.
+	// 是否需要更新 finalizer 或优雅删除信息
 	shouldUpdateFinalizers, _ := deletionFinalizersForGarbageCollection(ctx, e, accessor, options)
 	// TODO: remove the check, because we support no-op updates now.
+	// 如果对象需要更新 Finalizer 或设置删除时间戳等信息，就调用：
+	//deleteImmediately=false：说明不是马上删除，比如加了 finalizer 或设置了删除时间戳。
+	//如果 deleteImmediately && preconditions.ResourceVersion != nil，需要把对象的 ResourceVersion 更新一下。
 	if graceful || pendingFinalizers || shouldUpdateFinalizers {
+		//调用的是update接口，并不是立马删除的
 		err, ignoreNotFound, deleteImmediately, out, lastExisting = e.updateForGracefulDeletionAndFinalizers(ctx, name, key, options, preconditions, deleteValidation, obj)
 		// Update the preconditions.ResourceVersion if set since we updated the object.
 		if err == nil && deleteImmediately && preconditions.ResourceVersion != nil {
@@ -1199,6 +1298,7 @@ func (e *Store) Delete(ctx context.Context, name string, deleteValidation rest.V
 	}
 
 	// delete immediately, or no graceful deletion supported
+	//下面的就是真的要删除的了
 	klog.V(6).InfoS("Going to delete object from registry", "object", klog.KRef(genericapirequest.NamespaceValue(ctx), name))
 	out = e.NewFunc()
 	if err := e.Storage.Delete(ctx, key, out, &preconditions, storage.ValidateObjectFunc(deleteValidation), dryrun.IsDryRun(options.DryRun), nil, storage.DeleteOptions{}); err != nil {

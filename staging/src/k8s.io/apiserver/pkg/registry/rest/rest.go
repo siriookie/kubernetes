@@ -129,6 +129,7 @@ type Lister interface {
 	//例如对于 Pod 资源，会返回一个 &PodList{} 结构体，其 Items 字段为空的 Pod 数组。
 	NewList() runtime.Object
 	// List selects resources in the storage which match to the selector. 'options' can be nil.
+	//List 方法会直接去访问 etcd。
 	List(ctx context.Context, options *metainternalversion.ListOptions) (runtime.Object, error)
 	// TableConvertor ensures all list implementers also implement table conversion
 	TableConvertor

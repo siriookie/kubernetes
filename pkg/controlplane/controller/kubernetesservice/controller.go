@@ -84,6 +84,8 @@ func New(config Config, client kubernetes.Interface, serviceInformer v1informers
 
 // Start begins the core controller loops that must exist for bootstrapping
 // a cluster.
+// 主要作用是在 Kubernetes 集群启动时启动一个核心控制循环，以确保关键的服务（如 kubernetes 服务）能够正确运行。
+// 具体来说，它负责处理与 kubernetes API Server 服务相关的 endpoint 和其他初始化任务。
 func (c *Controller) Start(stopCh <-chan struct{}) {
 	if !cache.WaitForCacheSync(stopCh, c.serviceSynced) {
 		runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))

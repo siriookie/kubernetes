@@ -50,6 +50,23 @@ const (
 
 // cacheWatcher implements watch.Interface
 // this is not thread-safe
+// 1. watchCache 是个全局的、时间序列结构的事件缓冲区
+// 它维护了资源变更事件的历史（比如最近 1000 条）；
+//
+// 是个环形结构，用于快速回溯和对齐资源版本；
+//
+// 只负责存储 & 回溯，不直接对接客户端；
+//
+// 2. cacheWatcher 是针对每个客户端请求而存在的 watcher
+// 每个 Watch 请求都会分配一个 cacheWatcher；
+//
+// 它内部维护了：
+//
+// input chan：由 Cacher 向它喂事件；
+//
+// result chan：由它自己往外（客户端）发送事件；
+//
+// cacheWatcher 会异步读取 input，执行过滤器（labels/fields），然后将符合条件的推送到 result 给客户端；
 type cacheWatcher struct {
 	input     chan *watchCacheEvent
 	result    chan watch.Event
@@ -176,12 +193,19 @@ func (c *cacheWatcher) nonblockingAdd(event *watchCacheEvent) bool {
 //
 // Note that bookmark events are never added via the add method only via the nonblockingAdd.
 // Changing this behaviour will require moving the markBookmarkAfterRvAsReceived method
+// 在发送失败或阻塞太久的情况下，主动关闭这个 watcher，以防止整个系统被卡住。
 func (c *cacheWatcher) add(event *watchCacheEvent, timer *time.Timer) bool {
 	// Try to send the event immediately, without blocking.
+	//先尝试非阻塞发送，即 select { case c.input <- event: default: }：
+	//
+	//如果能立即发入 c.input（一个 channel），就成功了；
 	if c.nonblockingAdd(event) {
 		return true
 	}
-
+	//主动释放卡死的客户端 watcher，包括：
+	//记录监控指标（TerminatedWatchersCounter）；
+	//打印日志；
+	//调用 c.forget(graceful) 来释放资源、关闭 channel。
 	closeFunc := func() {
 		// This means that we couldn't send event to that watcher.
 		// Since we don't want to block on it infinitely,
@@ -220,6 +244,9 @@ func (c *cacheWatcher) add(event *watchCacheEvent, timer *time.Timer) bool {
 	}
 
 	// OK, block sending, but only until timer fires.
+	//如果在 timer 规定的时间内能把事件发入 c.input，就成功；
+	//
+	//否则超时了，调用 closeFunc()，主动关闭这个 watcher。
 	select {
 	case c.input <- event:
 		return true

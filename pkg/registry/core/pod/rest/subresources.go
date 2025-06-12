@@ -166,14 +166,23 @@ func (r *ExecREST) Destroy() {
 
 // Connect returns a handler for the pod exec proxy
 func (r *ExecREST) Connect(ctx context.Context, name string, opts runtime.Object, responder rest.Responder) (http.Handler, error) {
+	//将传入的 runtime.Object 强转为 PodExecOptions，这是用户通过 query 参数传进来的选项，如 command、stdin、tty 等。
 	execOpts, ok := opts.(*api.PodExecOptions)
 	if !ok {
 		return nil, fmt.Errorf("invalid options object: %#v", opts)
 	}
+	//🔹 通过 Pod 名字和选项，调用 ExecLocation：
+	//查找 Pod 信息
+	//确定在哪个 Node 上
+	//构造 proxy 地址（location）和连接信息（transport）
 	location, transport, err := pod.ExecLocation(ctx, r.Store, r.KubeletConn, name, execOpts)
 	if err != nil {
 		return nil, err
 	}
+	// 创建一个 HTTP 代理 handler，它能：
+	//支持协议升级（HTTP ➝ SPDY / WebSocket）
+	//将流量从客户端 ➝ apiserver ➝ kubelet 正确中转
+	//并发限制（throttling）
 	handler := newThrottledUpgradeAwareProxyHandler(location, transport, false, true, responder)
 	if utilfeature.DefaultFeatureGate.Enabled(features.TranslateStreamCloseWebsocketRequests) {
 		// Wrap the upgrade aware handler to implement stream translation

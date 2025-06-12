@@ -379,9 +379,11 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 	klog.V(3).Infof("Listing and watching %v from %s", r.typeDescription, r.name)
 	var err error
 	var w watch.Interface
-	useWatchList := ptr.Deref(r.UseWatchList, false)
-	fallbackToList := !useWatchList
-
+	useWatchList := ptr.Deref(r.UseWatchList, false) // 是否尝试 WatchList 特性
+	fallbackToList := !useWatchList                  // 是否降级到普通 List
+	//尝试通过 r.watchList(stopCh) 一次性获取全量数据 + 后续变更（合并 List 和 Watch）。
+	//
+	//失败时（如 API Server 不支持）：回退到标准 List + Watch 模式。
 	if useWatchList {
 		w, err = r.watchList(stopCh)
 		if w == nil && err == nil {
@@ -395,14 +397,14 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			w = nil
 		}
 	}
-
+	//先list
 	if fallbackToList {
 		err = r.list(stopCh)
 		if err != nil {
 			return err
 		}
 	}
-
+	//再watch
 	klog.V(2).Infof("Caches populated for %v from %s", r.typeDescription, r.name)
 	return r.watchWithResync(w, stopCh)
 }
@@ -573,7 +575,7 @@ func (r *Reflector) list(stopCh <-chan struct{}) error {
 			// we don't introduce regression.
 			pager.PageSize = 0
 		}
-
+		//先list
 		list, paginatedResult, err = pager.ListWithAlloc(context.Background(), options)
 		if isExpiredError(err) || isTooLargeResourceVersionError(err) {
 			r.setIsLastSyncResourceVersionUnavailable(true)
@@ -696,9 +698,9 @@ func (r *Reflector) watchList(stopCh <-chan struct{}) (watch.Interface, error) {
 		//  maybe in such a case we should retry with an increased timeout?
 		timeoutSeconds := int64(r.minWatchTimeout.Seconds() * (rand.Float64() + 1.0))
 		options := metav1.ListOptions{
-			ResourceVersion:      lastKnownRV,
+			ResourceVersion:      lastKnownRV, // 空字符串表示"最近版本"
 			AllowWatchBookmarks:  true,
-			SendInitialEvents:    pointer.Bool(true),
+			SendInitialEvents:    pointer.Bool(true), // 关键：要求返回初始事件
 			ResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
 			TimeoutSeconds:       &timeoutSeconds,
 		}

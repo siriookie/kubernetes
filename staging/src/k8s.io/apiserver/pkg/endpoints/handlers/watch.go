@@ -63,20 +63,24 @@ func (w *realTimeoutFactory) TimeoutCh() (<-chan time.Time, func() bool) {
 }
 
 // serveWatchHandler returns a handle to serve a watch response.
+// 为一次 watch 请求（也就是客户端通过 watch=true 发起的请求）创建一个 HTTP 处理器（http.Handler），用于持续地将资源变更事件从 apiserver 发送到客户端。
 // TODO: the functionality in this method and in WatchServer.Serve is not cleanly decoupled.
 func serveWatchHandler(watcher watch.Interface, scope *RequestScope, mediaTypeOptions negotiation.MediaTypeOptions, req *http.Request, w http.ResponseWriter, timeout time.Duration, metricsScope string, initialEventsListBlueprint runtime.Object) (http.Handler, error) {
+	//根据请求和 negotiated 的媒体类型，解析是否需要对象转换（如 Table 转换）等。
 	options, err := optionsForTransform(mediaTypeOptions, req)
 	if err != nil {
 		return nil, err
 	}
 
 	// negotiate for the stream serializer from the scope's serializer
+	//决定用什么流媒体编码格式（通常是 JSON，但也可能是 CBOR）。
 	serializer, err := negotiation.NegotiateOutputMediaTypeStream(req, scope.Serializer, scope)
 	if err != nil {
 		return nil, err
 	}
 	framer := serializer.StreamSerializer.Framer
 	var encoder runtime.Encoder
+	//根据 negotiated 的编码器，创建实际对象的序列化器。
 	if utilfeature.DefaultFeatureGate.Enabled(features.CBORServingAndStorage) {
 		encoder = scope.Serializer.EncoderForVersion(runtime.UseNondeterministicEncoding(serializer.StreamSerializer.Serializer), scope.Kind.GroupVersion())
 	} else {
@@ -88,6 +92,7 @@ func serveWatchHandler(watcher watch.Interface, scope *RequestScope, mediaTypeOp
 	}
 	// TODO: next step, get back mediaTypeOptions from negotiate and return the exact value here
 	mediaType := serializer.MediaType
+	//如果是 CBOR 序列化，按照标准指定 application/cbor-seq。
 	switch mediaType {
 	case runtime.ContentTypeJSON:
 		// as-is
@@ -126,7 +131,7 @@ func serveWatchHandler(watcher watch.Interface, scope *RequestScope, mediaTypeOp
 	}
 
 	var memoryAllocator runtime.MemoryAllocator
-
+	//为了优化性能，支持内存复用的 encoder 会使用预分配的 Allocator，避免频繁 GC。
 	if encoderWithAllocator, supportsAllocator := negotiatedEncoder.(runtime.EncoderWithAllocator); supportsAllocator {
 		// don't put the allocator inside the embeddedEncodeFn as that would allocate memory on every call.
 		// instead, we allocate the buffer for the entire watch session and release it when we close the connection.
@@ -156,7 +161,7 @@ func serveWatchHandler(watcher watch.Interface, scope *RequestScope, mediaTypeOp
 	if signals := apirequest.ServerShutdownSignalFrom(req.Context()); signals != nil {
 		serverShuttingDownCh = signals.ShuttingDown()
 	}
-
+	//将上面的 encoder、framer、watcher 等打包成一个 WatchServer，它是真正负责发送事件的对象。
 	server := &WatchServer{
 		Watching: watcher,
 		Scope:    scope,
@@ -175,7 +180,7 @@ func serveWatchHandler(watcher watch.Interface, scope *RequestScope, mediaTypeOp
 
 		metricsScope: metricsScope,
 	}
-
+	//Kubernetes watch 支持 WebSocket 和 HTTP 连接，这里根据请求类型选择返回 WebSocket 处理器还是普通 HTTP 处理器。
 	if wsstream.IsWebSocketRequest(req) {
 		w.Header().Set("Content-Type", server.MediaType)
 		return websocket.Handler(server.HandleWS), nil
@@ -213,12 +218,13 @@ type WatchServer struct {
 // HandleHTTP serves a series of encoded events via HTTP with Transfer-Encoding: chunked.
 // or over a websocket connection.
 func (s *WatchServer) HandleHTTP(w http.ResponseWriter, req *http.Request) {
+	//如果使用了内存池分配器，结束时归还给池子，避免内存泄露。
 	defer func() {
 		if s.MemoryAllocator != nil {
 			runtime.AllocatorPool.Put(s.MemoryAllocator)
 		}
 	}()
-
+	//watch 是基于 HTTP 长连接 + chunked 编码，要求底层能主动 flush 内容（把数据推给客户端）。不支持就返回 500 错误。
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		err := fmt.Errorf("unable to start watch - can't get http.Flusher: %#v", w)
@@ -226,7 +232,7 @@ func (s *WatchServer) HandleHTTP(w http.ResponseWriter, req *http.Request) {
 		s.Scope.err(errors.NewInternalError(err), w, req)
 		return
 	}
-
+	//帧写入器用于把一个个 watch 事件写入响应流中（如 JSON 每一行是一个事件）。如果不支持 framing，则返回错误。
 	framer := s.Framer.NewFrameWriter(w)
 	if framer == nil {
 		// programmer error
@@ -237,20 +243,29 @@ func (s *WatchServer) HandleHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// ensure the connection times out
+	//创建一个超时通道，watch 不能无限连接，默认有一个最长生命周期，比如 5 分钟。
 	timeoutCh, cleanup := s.TimeoutFactory.TimeoutCh()
 	defer cleanup()
 
 	// begin the stream
+	//告诉客户端我们将以流式方式返回内容。
 	w.Header().Set("Content-Type", s.MediaType)
 	w.Header().Set("Transfer-Encoding", "chunked")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
+	//watchEncoder 负责把 watch.Event 编码成 JSON 等格式。
+	//ch 是事件通道，里面源源不断地收到资源的变化（由 etcd watch 或 watchcache 提供）。
 	kind := s.Scope.Kind
 	watchEncoder := newWatchEncoder(req.Context(), kind, s.EmbeddedEncoder, s.Encoder, framer, s.watchListTransformerFn)
 	ch := s.Watching.ResultChan()
 	done := req.Context().Done()
-
+	//🔌 ServerShuttingDownCh: apiserver 要关闭了，终止。
+	//
+	//❌ done: 客户端主动断开连接。
+	//
+	//⏳ timeoutCh: 达到连接最长存活时间。
+	//
+	//📡 event, ok := <-ch: 收到事件。发送给客户端。
 	for {
 		select {
 		case <-s.ServerShuttingDownCh:

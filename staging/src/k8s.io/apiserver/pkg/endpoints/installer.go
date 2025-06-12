@@ -219,6 +219,11 @@ func (a *APIInstaller) Install() ([]metav1.APIResource, []*storageversion.Resour
 		paths[i] = path
 		i++
 	}
+	//paths:[
+	//"deployments"
+	//"deployments/scale"
+	//"pods"
+	//"pods/status" ]
 	sort.Strings(paths)
 	for _, path := range paths {
 		apiResource, resourceInfo, err := a.registerResourceHandlers(path, a.group.Storage[path], ws)
@@ -931,7 +936,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 		case "GET": // Get a resource.
 			var handler restful.RouteFunction
 			if isGetterWithOptions {
-				//如果 storage 实现了 GetterWithOptions（支持像 GET /pod?export=true 这样的选项），就调用 restfulGetResourceWithOptions。
+				//如果 storage 实现了 GetterWithOptions（目前只有pod log实现了这个），就调用 restfulGetResourceWithOptions。
 				handler = restfulGetResourceWithOptions(getterWithOptions, reqScope, isSubresource)
 			} else {
 				handler = restfulGetResource(getter, reqScope)
@@ -939,10 +944,12 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 
 			if needOverride {
 				// need change the reported verb
+				//metrics.InstrumentRouteFunc：为路由添加性能监控，记录请求的相关指标。
 				handler = metrics.InstrumentRouteFunc(verbOverrider.OverrideMetricsVerb(action.Verb), group, version, resource, subresource, requestScope, metrics.APIServerComponent, deprecated, removedRelease, handler)
 			} else {
 				handler = metrics.InstrumentRouteFunc(action.Verb, group, version, resource, subresource, requestScope, metrics.APIServerComponent, deprecated, removedRelease, handler)
 			}
+			//：为路由添加警告处理，处理可能的 API 使用警告。
 			handler = utilwarning.AddWarningsHandler(handler, warnings)
 
 			doc := "read the specified " + kind
@@ -1020,6 +1027,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 			addParams(route, action.Params)
 			routes = append(routes, route)
 		case "PATCH": // Partially update a resource
+			// 底层还是在api server拼装好整个obj然后调用etcd 的update方法修改
 			doc := "partially update the specified " + kind
 			if isSubresource {
 				doc = "partially update " + subresource + " of the specified " + kind
@@ -1053,7 +1061,13 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 			routes = append(routes, route)
 		case "POST": // Create a resource.
 			var handler restful.RouteFunction
+			//isNamedCreater：表示客户端是否可以指定资源名称（有些资源只能由服务器自动生成）。
+			//
+			//restfulCreateNamedResource(...) / restfulCreateResource(...)：
+			//
+			//构建用于处理创建请求的函数（本质上会调用 Storage.Create()，做验证、审计、转换等）。
 			if isNamedCreater {
+				//拼好obj调用etcd的create接口
 				handler = restfulCreateNamedResource(namedCreater, reqScope, admit)
 			} else {
 				handler = restfulCreateResource(creater, reqScope, admit)
@@ -1138,6 +1152,22 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 			addParams(route, action.Params)
 			routes = append(routes, route)
 		// deprecated in 1.11
+		//watch 操作，实际上就是发起一个 list 请求并附加 ?watch=true 参数，这样 apiserver 会返回一个持续的流（stream），用于观察该资源的变动。
+		//
+		//✅ 示例
+		//以 Pod 为例，想要监听某个 namespace 下所有 Pod 的变化：
+		//
+		//swift
+		//复制
+		//编辑
+		//GET /api/v1/namespaces/default/pods?watch=true
+		//如果你只想 watch 某个特定的 Pod：
+		//
+		//swift
+		//复制
+		//编辑
+		//GET /api/v1/namespaces/default/pods?watch=true&fieldSelector=metadata.name=my-pod
+		//这种方式同时也支持传入 resourceVersion 参数，指定从哪个版本开始 watch 变更。
 		case "WATCH": // Watch a resource.
 			doc := "watch changes to an object of kind " + kind
 			if isSubresource {
@@ -1180,6 +1210,15 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 			addParams(route, action.Params)
 			routes = append(routes, route)
 		case "CONNECT":
+			//CONNECT 操作是 API Server 提供的一个特殊的 HTTP 动作（不是标准的 CRUD：Create、Read、Update、Delete），主要用于 建立长连接（如 WebSocket、升级协议、双向通信）。它通常用于：
+			//
+			//exec：远程执行容器命令
+			//
+			//attach：附着到容器标准输入输出
+			//
+			//portforward：对 Pod 端口进行端口转发
+			//
+			//proxy：连接到集群内部的服务//
 			for _, method := range connecter.ConnectMethods() {
 				connectProducedObject := storageMeta.ProducesObject(method)
 				if connectProducedObject == nil {
@@ -1195,7 +1234,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 					To(handler).
 					Doc(doc).
 					Operation("connect" + strings.Title(strings.ToLower(method)) + namespaced + kind + strings.Title(subresource) + operationSuffix).
-					Produces("*/*").
+					Produces("*/*"). //Produces("*/*") / Consumes("*/*")：代表它接受和返回所有格式（因为它返回的是 stream）。
 					Consumes("*/*").
 					Writes(connectProducedObject)
 				if versionedConnectOptions != nil {
@@ -1247,7 +1286,28 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 		}
 		apiResource.SingularName = singularNameProvider.GetSingularName()
 	}
-
+	//将 GroupVersionResource（GVR） 和 GroupVersionKind（GVK） 之间的对应关系记录下来。
+	//
+	//reqScope.Resource 表示这个资源的 GVR。
+	//
+	//fqKindToRegister 是完整的 GVK。
+	//
+	//这是为了支持 "equivalence" 查询，例如：Kubernetes 客户端希望知道 myresources.mygroup.io 这个 GVR 对应的是哪个 Kind。
+	//
+	//📘 举例：
+	//如果你有一个 GVR 是：
+	//
+	//yaml
+	//复制
+	//编辑
+	//Group: "apps", Version: "v1", Resource: "deployments"
+	//它的对应 GVK 可能是：
+	//
+	//yaml
+	//复制
+	//编辑
+	//Group: "apps", Version: "v1", Kind: "Deployment"
+	//这个注册动作就是把这两个联系起来，便于后续操作如 CRD 类型识别、REST mapping 等。
 	if gvkProvider, ok := storage.(rest.GroupVersionKindProvider); ok {
 		gvk := gvkProvider.GroupVersionKind(a.group.GroupVersion)
 		apiResource.Group = gvk.Group

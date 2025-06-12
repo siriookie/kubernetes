@@ -64,6 +64,7 @@ func (s *DryRunnableStorage) Watch(ctx context.Context, key string, opts storage
 }
 
 func (s *DryRunnableStorage) Get(ctx context.Context, key string, opts storage.GetOptions, objPtr runtime.Object) error {
+	//一般都是cacher
 	return s.Storage.Get(ctx, key, opts, objPtr)
 }
 

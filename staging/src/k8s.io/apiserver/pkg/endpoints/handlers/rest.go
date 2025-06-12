@@ -217,6 +217,13 @@ func ConnectResource(connecter rest.Connecter, scope *RequestScope, admit admiss
 		}
 		requestInfo, _ := request.RequestInfoFrom(ctx)
 		metrics.RecordLongRunning(req, requestInfo, metrics.APIServerComponent, func() {
+			//🔹 将请求交给该连接 handler 处理，常见的行为包括：
+			//
+			//升级 HTTP 到 SPDY/WebSocket 协议
+			//
+			//建立与 containerd/cri 的连接
+			//
+			//在终端中看到 exec 输出等
 			handler, err := connecter.Connect(ctx, name, opts, &responder{scope: scope, req: req, w: w})
 			if err != nil {
 				scope.err(err, w, req)

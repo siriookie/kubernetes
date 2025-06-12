@@ -354,6 +354,13 @@ func (s *Scheme) Default(src Object) {
 // a to test conversion of types that are nested within registered types). The
 // context interface is passed to the convertor. Convert also supports Unstructured
 // types and will convert them intelligently.
+// 在 Kubernetes 中，配置对象、资源对象（如 Pod、Deployment）都可能存在多个版本（v1, v1beta1 等），
+// 这些版本之间需要互相转换。而 Scheme.Convert 就是完成这种“对象结构体之间转换”的统一入口。
+// in: 输入对象（必须是指针）
+//
+// out: 输出对象（必须是指针）
+//
+// context: 上下文（通常是 GroupVersioner，用于指定要转换成哪个 API 版本）
 func (s *Scheme) Convert(in, out interface{}, context interface{}) error {
 	unstructuredIn, okIn := in.(Unstructured)
 	unstructuredOut, okOut := out.(Unstructured)

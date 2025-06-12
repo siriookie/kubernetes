@@ -519,9 +519,10 @@ func (c *Cacher) startCaching(stopChannel <-chan struct{}) {
 	// it when this function exits (always due to disconnection), only if
 	// we actually got a successful list. This cycle will repeat as needed.
 	successfulList := false
+	//通过 SetOnReplace 设置回调函数，当缓存首次成功填充数据后触发：
 	c.watchCache.SetOnReplace(func() {
 		successfulList = true
-		c.ready.set(true)
+		c.ready.set(true) // 缓存就绪
 		klog.V(1).Infof("cacher (%v): initialized", c.groupResource.String())
 		metrics.WatchCacheInitializations.WithLabelValues(c.groupResource.String()).Inc()
 	})
@@ -584,19 +585,24 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	//
 	// it should never happen due to our validation but let's just be super-safe here
 	// and disable sendingInitialEvents when the feature wasn't enabled
+	//处理 ResourceVersion 和是否发初始事件
 	if !utilfeature.DefaultFeatureGate.Enabled(features.WatchList) && opts.SendInitialEvents != nil {
 		opts.SendInitialEvents = nil
 	}
 	// TODO: we should eventually get rid of this legacy case
+	//如果开启了 WatchFromStorageWithoutResourceVersion 特性，且未指定 resourceVersion，则绕过 watch cache，直接从底层 etcd 等后端开启 Watch。
 	if utilfeature.DefaultFeatureGate.Enabled(features.WatchFromStorageWithoutResourceVersion) && opts.SendInitialEvents == nil && opts.ResourceVersion == "" {
 		return c.storage.Watch(ctx, key, opts)
 	}
+	//把用户传入的字符串版本号解析成内部版本号（整数或结构体）。
 	requestedWatchRV, err := c.versioner.ParseResourceVersion(opts.ResourceVersion)
 	if err != nil {
 		return nil, err
 	}
 
 	var readyGeneration int
+	//这段代码的目的是：确保 watch cache 已经初始化完成，再开始处理 Watch 请求。
+	//若开启新特性：快速失败（不阻塞）并提示正在初始化。
 	if utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
 		var ok bool
 		readyGeneration, ok = c.ready.checkAndReadGeneration()
@@ -604,6 +610,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 			return nil, errors.NewTooManyRequests("storage is (re)initializing", 1)
 		}
 	} else {
+		//若未开启新特性：老实等待初始化完成再继续。
 		readyGeneration, err = c.ready.waitAndReadGeneration(ctx)
 		if err != nil {
 			return nil, errors.NewServiceUnavailable(err.Error())
@@ -611,6 +618,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	}
 
 	// determine the namespace and name scope of the watch, first from the request, secondarily from the field selector
+	//根据 ctx 里的请求信息（RequestInfo）或字段选择器（field selector）提取命名空间和名字范围。
 	scope := namespacedName{}
 	if requestNamespace, ok := request.NamespaceFrom(ctx); ok && len(requestNamespace) > 0 {
 		scope.namespace = requestNamespace
@@ -630,6 +638,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	}
 
 	triggerValue, triggerSupported := "", false
+	//如果 watch cache 支持基于某字段建立索引（如 spec.nodeName），则优先使用该索引提升查找效率。
 	if c.indexedTrigger != nil {
 		for _, field := range pred.IndexFields {
 			if field == c.indexedTrigger.indexName {
@@ -646,21 +655,25 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	// - having it large enough to ensure that watchers that need to process
 	//   a bunch of changes have enough buffer to avoid from blocking other
 	//   watchers on our watcher having a processing hiccup
+	//决定事件缓冲区大小，太小容易丢事件，太大浪费内存。
 	chanSize := c.watchCache.suggestedWatchChannelSize(c.indexedTrigger != nil, triggerSupported)
 
 	// client-go is going to fall back to a standard LIST on any error
 	// returned for watch-list requests
+	//如果用户请求的是“watch-list”但底层不支持相关特性，就返回错误类型事件。
 	if isListWatchRequest(opts) && !etcdfeature.DefaultFeatureSupportChecker.Supports(storage.RequestWatchProgress) {
 		return newErrWatcher(fmt.Errorf("a watch stream was requested by the client but the required storage feature %s is disabled", storage.RequestWatchProgress)), nil
 	}
 
 	// Determine the ResourceVersion to which the watch cache must be synchronized
+	//根据客户端请求的 RV，确定 watch cache 应该同步到哪个版本再开启 watch。
 	requiredResourceVersion, err := c.getWatchCacheResourceVersion(ctx, requestedWatchRV, opts)
 	if err != nil {
 		return newErrWatcher(err), nil
 	}
 
 	// Determine a function that computes the bookmarkAfterResourceVersion
+	//生成一个函数用于设置 bookmark 起点。
 	bookmarkAfterResourceVersionFn, err := c.getBookmarkAfterResourceVersionLockedFunc(requestedWatchRV, requiredResourceVersion, opts)
 	if err != nil {
 		return newErrWatcher(err), nil
@@ -693,6 +706,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	// moreover even though the c.waitUntilWatchCacheFreshAndForceAllEvents acquires a lock
 	// it is safe to release the lock after the method finishes because we don't require
 	// any atomicity between the call to the method and further calls that actually get the events.
+	//如果缓存未同步到 requiredResourceVersion，则强制同步，确保 watcher 能正确接收事件。
 	err = c.waitUntilWatchCacheFreshAndForceAllEvents(ctx, requiredResourceVersion, opts)
 	if err != nil {
 		return newErrWatcher(err), nil
@@ -707,6 +721,7 @@ func (c *Cacher) Watch(ctx context.Context, key string, opts storage.ListOptions
 	defer c.watchCache.RUnlock()
 
 	var cacheInterval *watchCacheInterval
+	//获取从某个版本开始的所有变化事件。供 SendInitialEvents 功能使用。
 	cacheInterval, err = c.watchCache.getAllEventsSinceLocked(requiredResourceVersion, key, opts)
 	if err != nil {
 		// To match the uncached watch implementation, once we have passed authn/authz/admission,
@@ -761,14 +776,66 @@ func (c *Cacher) Get(ctx context.Context, key string, opts storage.GetOptions, o
 		attribute.String("audit-id", audit.GetAuditIDTruncated(ctx)),
 		attribute.String("key", key),
 		attribute.String("resource-version", opts.ResourceVersion))
+	//defer span.End(500 * time.Millisecond) 表示在函数结束时关闭追踪，设置了一个 500 毫秒的超时时间。
 	defer span.End(500 * time.Millisecond)
+	//如果没有提供 resourceVersion，就没有办法从缓存中保证数据的新鲜度，因此需要直接从底层存储中获取。
+	//
+	//这时调用 c.storage.Get，即调用实际存储（通常是 etcd）的 Get 方法。
+	//1. GET 请求带 resourceVersion
+	//当你希望获取一个特定版本的 Pod，或者在 Watch 中持续跟踪资源的变化时，会带上 resourceVersion。
+	//
+	//场景： 获取一个 Pod 的当前版本或 Watch 变更。
+	//
+	//请求示例：
+	//
+	//bash
+	//复制
+	//编辑
+	//kubectl get pod my-pod --resource-version=12345
+	//或者使用 API：
+	//
+	//http
+	//复制
+	//编辑
+	//GET /api/v1/pods/my-pod?resourceVersion=12345
+	//解释：
+	//
+	//这时候请求明确指定了 resourceVersion（例如 12345），Kubernetes 会尝试返回该版本及之后的版本的数据，或者如果没有变化，则会根据指定的版本号返回。
+	//
+	//Kubernetes 会检查该 resourceVersion 是否存在，如果存在，返回对应版本的数据。如果没有该版本的数据，则返回错误。
+	//
+	//2. GET 请求不带 resourceVersion
+	//如果你不关心返回的数据版本，只需要最新的 Pod 信息，你可以不指定 resourceVersion。
+	//
+	//场景： 获取最新的 Pod。
+	//
+	//请求示例：
+	//
+	//bash
+	//复制
+	//编辑
+	//kubectl get pod my-pod
+	//或者使用 API：
+	//
+	//http
+	//复制
+	//编辑
+	//GET /api/v1/pods/my-pod
+	//解释：
+	//
+	//这个请求不带 resourceVersion，Kubernetes 会返回 Pod 的最新版本。
+	//
+	//在这种情况下，Kubernetes 会从底层存储（通常是 etcd）中获取数据，无法从缓存中获取，因为无法保证最新的数据。
 	if opts.ResourceVersion == "" {
 		// If resourceVersion is not specified, serve it from underlying
 		// storage (for backward compatibility).
 		span.AddEvent("About to Get from underlying storage")
+		//去etcd拿
 		return c.storage.Get(ctx, key, opts, objPtr)
 	}
-
+	//如果启用了 ResilientWatchCacheInitialization 特性，并且缓存未初始化（!c.ready.check()），那么就会将请求转发到底层存储（etcd）。
+	//
+	//这段代码用于确保在缓存尚未初始化的情况下，避免缓存不一致问题。
 	if utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
 		if !c.ready.check() {
 			// If Cache is not initialized, delegate Get requests to storage
@@ -781,6 +848,9 @@ func (c *Cacher) Get(ctx context.Context, key string, opts storage.GetOptions, o
 	// If resourceVersion is specified, serve it from cache.
 	// It's guaranteed that the returned value is at least that
 	// fresh as the given resourceVersion.
+	//解析请求中的 resourceVersion，以确保获取的是一个有效的版本。
+	//
+	//如果解析失败，返回错误。
 	getRV, err := c.versioner.ParseResourceVersion(opts.ResourceVersion)
 	if err != nil {
 		return err
@@ -788,9 +858,10 @@ func (c *Cacher) Get(ctx context.Context, key string, opts storage.GetOptions, o
 
 	// Do not create a trace - it's not for free and there are tons
 	// of Get requests. We can add it if it will be really needed.
-
+	//如果没有开启 ResilientWatchCacheInitialization 特性并且缓存未初始化，且没有指定 resourceVersion（即 getRV == 0），则会直接从底层存储获取资源。
 	if !utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
 		if getRV == 0 && !c.ready.check() {
+			//如果缓存需要等待初始化，且特性开启，则会等待缓存准备好再继续
 			// If Cacher is not yet initialized and we don't require any specific
 			// minimal resource version, simply forward the request to storage.
 			span.AddEvent("About to Get from underlying storage - cache not initialized and no resourceVersion set")
@@ -800,13 +871,18 @@ func (c *Cacher) Get(ctx context.Context, key string, opts storage.GetOptions, o
 			return errors.NewServiceUnavailable(err.Error())
 		}
 	}
-
+	//通过 conversion.EnforcePtr 确保 objPtr 是一个有效的指针。
 	objVal, err := conversion.EnforcePtr(objPtr)
 	if err != nil {
 		return err
 	}
 
 	span.AddEvent("About to fetch object from cache")
+	//过 c.watchCache.WaitUntilFreshAndGet 方法尝试从缓存中获取数据，直到缓存中的数据足够新。
+	//
+	//getRV 是解析后的 resourceVersion，用于确保返回的资源版本不小于指定版本。
+	//
+	//key 是要获取的资源的唯一标识。
 	obj, exists, readResourceVersion, err := c.watchCache.WaitUntilFreshAndGet(ctx, getRV, key)
 	if err != nil {
 		return err
@@ -898,7 +974,8 @@ func (c *Cacher) GetList(ctx context.Context, key string, opts storage.ListOptio
 	if err != nil {
 		return err
 	}
-
+	//如果启用了 ConsistentListFromCache 特性，
+	//并且支持一致读取（Supports(storage.RequestWatchProgress)），则会从缓存中读取数据，同时使用当前资源版本（listRV）：
 	if utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
 		if !c.ready.check() && shouldDelegateListOnNotReadyCache(opts) {
 			// If Cacher is not initialized, delegate List requests to storage
@@ -1029,6 +1106,20 @@ func (c *Cacher) GetList(ctx context.Context, key string, opts storage.ListOptio
 }
 
 // GuaranteedUpdate implements storage.Interface.
+// Controller 或用户发起 Update 请求
+//
+//	       ↓
+//	 API Server 调用 Store.Update
+//	       ↓
+//	 Store 包装 storage.GuaranteedUpdate
+//	       ↓
+//	  ┌─────────────────────┐
+//	  │      Cacher         │ ← 提供“当前对象”的建议值
+//	  └─────────────────────┘
+//	       ↓
+//	etcd-backed GuaranteedUpdate
+//	       ↓
+//	实际写入 etcd 中（有 CAS 保证）
 func (c *Cacher) GuaranteedUpdate(
 	ctx context.Context, key string, destination runtime.Object, ignoreNotFound bool,
 	preconditions *storage.Preconditions, tryUpdate storage.UpdateFunc, _ runtime.Object) error {
@@ -1248,12 +1339,20 @@ func (c *Cacher) dispatchEvent(event *watchCacheEvent) {
 		event = &wcEvent
 
 		c.blockedWatchers = c.blockedWatchers[:0]
+		//创建一个新的空切片 blockedWatchers 来存储暂时无法处理事件的 watchers。
+		//
+		//对每个 watcher，调用 nonblockingAdd(event) 尝试将事件添加给它。
+		//如果该操作失败（返回 false），说明这个 watcher 暂时无法处理该事件，就把它加入 blockedWatchers 列表。
 		for _, watcher := range c.watchersBuffer {
 			if !watcher.nonblockingAdd(event) {
 				c.blockedWatchers = append(c.blockedWatchers, watcher)
 			}
 		}
-
+		//如果有被阻塞的 watchers，就创建一个定时器来处理它们。
+		//
+		//dispatchTimeoutBudget.takeAvailable() 获取可用的时间段，用于设置超时。
+		//
+		//c.timer.Reset(timeout) 设置超时定时器。
 		if len(c.blockedWatchers) > 0 {
 			// dispatchEvent is called very often, so arrange
 			// to reuse timers instead of constantly allocating.

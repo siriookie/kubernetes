@@ -71,6 +71,7 @@ func DeleteResource(r rest.GracefulDeleter, allowsOptions bool, scope *RequestSc
 
 		// enforce a timeout of at most requestTimeoutUpperBound (34s) or less if the user-provided
 		// timeout inside the parent context is lower than requestTimeoutUpperBound.
+		//设置请求最大超时为 34s（防止处理时间过长）。
 		ctx, cancel := context.WithTimeout(ctx, requestTimeoutUpperBound)
 		defer cancel()
 
@@ -84,6 +85,7 @@ func DeleteResource(r rest.GracefulDeleter, allowsOptions bool, scope *RequestSc
 		}
 
 		options := &metav1.DeleteOptions{}
+		//如果服务器允许带 body 的 DELETE 请求（如用于级联删除等），则：
 		if allowsOptions {
 			body, err := limitedReadBodyWithRecordMetric(ctx, req, scope.MaxRequestBodyBytes, scope.Resource.GroupResource().String(), requestmetrics.Delete)
 			if err != nil {

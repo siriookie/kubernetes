@@ -84,6 +84,13 @@ func FinishRequest(ctx context.Context, fn ResultFunc) (runtime.Object, error) {
 	return finishRequest(ctx, fn, postTimeoutLoggerWait, logPostTimeoutResult)
 }
 
+// 安全执行一个可能 panic 的函数 fn
+//
+// 如果请求在 ctx 规定的时间内完成，正常返回结果
+//
+// 如果超时了，返回超时错误，但依然异步地等待 goroutine 完成并记录日志，防止资源泄漏或调试困难
+//
+// 如果 goroutine 中 panic，也能捕获下来
 func finishRequest(ctx context.Context, fn ResultFunc, postTimeoutWait time.Duration, postTimeoutLogger PostTimeoutLoggerFunc) (runtime.Object, error) {
 	// the channel needs to be buffered since the post-timeout receiver goroutine
 	// waits up to 5 minutes for the child goroutine to return.

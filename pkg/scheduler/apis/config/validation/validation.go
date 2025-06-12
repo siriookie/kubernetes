@@ -35,6 +35,9 @@ import (
 // ValidateKubeSchedulerConfiguration ensures validation of the KubeSchedulerConfiguration struct
 func ValidateKubeSchedulerConfiguration(cc *config.KubeSchedulerConfiguration) utilerrors.Aggregate {
 	var errs []error
+	//检查 client 配置（如 kubeconfig 文件路径、QPS、Burst 值）
+	//
+	//检查 leader election 设置是否完整（如是否设置租约名、命名空间等）
 	errs = append(errs, componentbasevalidation.ValidateClientConnectionConfiguration(&cc.ClientConnection, field.NewPath("clientConnection")).ToAggregate())
 	errs = append(errs, componentbasevalidation.ValidateLeaderElectionConfiguration(&cc.LeaderElection, field.NewPath("leaderElection")).ToAggregate())
 

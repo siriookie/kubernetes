@@ -140,10 +140,13 @@ func (s sortableWatchCacheEvents) Swap(i, j int) {
 // returned by Next() need to be events from a List() done on the underlying store of
 // the watch cache.
 // The items returned in the interval will be sorted by Key.
+// 当客户端发起 watch 请求并指定 resourceVersion=0 时，构造一个包含当前对象状态的事件列表，用于作为 watch 的初始事件流。
 func newCacheIntervalFromStore(resourceVersion uint64, store storeIndexer, getAttrsFunc attrFunc, key string, matchesSingle bool) (*watchCacheInterval, error) {
 	buffer := &watchCacheIntervalBuffer{}
 	var allItems []interface{}
-
+	//如果是 watch 单个对象（例如 GET /api/v1/namespaces/ns/pods/foo?watch=1），调用 store.GetByKey；
+	//
+	//否则就全量 list 当前对象列表。
 	if matchesSingle {
 		item, exists, err := store.GetByKey(key)
 		if err != nil {
